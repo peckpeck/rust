@@ -343,41 +343,47 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         call_expr: &'tcx hir::Expr<'tcx>,
         self_expr: &'tcx hir::Expr<'tcx>,
     ) -> Option<InferOk<'tcx, MethodCallee<'tcx>>> {
-
-   //     self.lookup_method_in_trait(span, m_name,trait_def_id,self_ty,opt_input_types ) /*
+        //     self.lookup_method_in_trait(span, m_name,trait_def_id,self_ty,opt_input_types ) /*
         debug!(
             "lookup_in_trait_adjusted_x2(self_ty={:?}, m_name={}, trait_def_id={:?}, opt_input_types={:?})",
             self_ty, m_name, trait_def_id, opt_input_types
         );
 
-
         let opt_second_type = if let Some(x) = opt_input_types {
-            if x.len() == 0 { None } else {
-                Some(x[0].clone())
-            }
-        } else { None };
+            if x.len() == 0 { None } else { Some(x[0].clone()) }
+        } else {
+            None
+        };
 
-        let pick = self.probe_for_op_name(
-            span,
-            m_name,
-            IsSuggestion(false),
-            self_ty,
-            call_expr.hir_id,
-            trait_def_id,
-            opt_second_type,
-        ).ok()?;
+        let pick = self
+            .probe_for_op_name(
+                span,
+                m_name,
+                IsSuggestion(false),
+                self_ty,
+                call_expr.hir_id,
+                trait_def_id,
+                opt_second_type,
+            )
+            .ok()?;
 
         //let pick =
         //    self.lookup_probe(span, m_name, self_ty, call_expr, ProbeScope::GivenTrait(trait_def_id)).ok()?;
 
         //let pick = self.probe_for_x2(span, m_name, self_ty, trait_def_id, call_expr.hir_id).ok()?;
 
-        debug!("pick_x2={:?}",pick);
+        debug!("pick_x2={:?}", pick);
 
-        let result =
-            self.confirm_method(span, self_expr, call_expr, self_ty, pick.clone(), &hir::PathSegment::from_ident(m_name));
+        let result = self.confirm_method(
+            span,
+            self_expr,
+            call_expr,
+            self_ty,
+            pick.clone(),
+            &hir::PathSegment::from_ident(m_name),
+        );
 
-        debug!("result_x2={:?}",result);
+        debug!("result_x2={:?}", result);
 
         let def_id = result.callee.def_id;
 
@@ -416,7 +422,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         };
         let _ = fn_sig;
 
-
         // Register obligations for the parameters. This will include the
         // `Self` parameter, which in turn has a bound of the main trait,
         // so this also effectively registers `obligation` as well.  (We
@@ -436,21 +441,21 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         assert!(!bounds.has_escaping_bound_vars());
 
-/*        let cause = traits::ObligationCause::misc(span, self.body_id);
-        obligations.extend(traits::predicates_for_generics(cause.clone(), self.param_env, bounds));
+        /*        let cause = traits::ObligationCause::misc(span, self.body_id);
+                obligations.extend(traits::predicates_for_generics(cause.clone(), self.param_env, bounds));
 
-        // Also add an obligation for the method type being well-formed.
-        let method_ty = self.tcx.mk_fn_ptr(ty::Binder::dummy(fn_sig));
-        debug!(
-            "lookup_in_trait_adjusted_x2: matched method method_ty={:?} obligations={:?}",
-            method_ty, obligations
-        );
-        obligations.push(traits::Obligation::new(
-            cause,
-            self.param_env,
-            ty::Binder::dummy(ty::PredicateKind::WellFormed(method_ty.into())).to_predicate(self.tcx),
-        ));
-*/
+                // Also add an obligation for the method type being well-formed.
+                let method_ty = self.tcx.mk_fn_ptr(ty::Binder::dummy(fn_sig));
+                debug!(
+                    "lookup_in_trait_adjusted_x2: matched method method_ty={:?} obligations={:?}",
+                    method_ty, obligations
+                );
+                obligations.push(traits::Obligation::new(
+                    cause,
+                    self.param_env,
+                    ty::Binder::dummy(ty::PredicateKind::WellFormed(method_ty.into())).to_predicate(self.tcx),
+                ));
+        */
         debug!("_x2 callee = {:?} obligations={:?}", result.callee, obligations);
 
         Some(InferOk { obligations, value: result.callee })

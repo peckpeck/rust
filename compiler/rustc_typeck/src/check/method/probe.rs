@@ -335,8 +335,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         scope: ProbeScope,
         op: OP,
     ) -> Result<R, MethodError<'tcx>>
-        where
-            OP: FnOnce(ProbeContext<'a, 'tcx>) -> Result<R, MethodError<'tcx>>,
+    where
+        OP: FnOnce(ProbeContext<'a, 'tcx>) -> Result<R, MethodError<'tcx>>,
     {
         let mut orig_values = OriginalQueryValues::default();
         let param_env_and_self_ty = self.infcx.canonicalize_query(
@@ -563,7 +563,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 scope_expr_id,
             );
 
-            probe_cx.assemble_inherent_candidates();
             probe_cx.assemble_extension_candidates_for_trait(&smallvec![], trait_def_id);
             probe_cx.pick()
         })
@@ -577,7 +576,6 @@ pub fn provide(providers: &mut ty::query::Providers) {
 fn method_autoderef_steps<'tcx>(
     tcx: TyCtxt<'tcx>,
     goal: CanonicalTyGoal<'tcx>,
-    second_type: Option<Ty<'tcx>>,
 ) -> MethodAutoderefStepsResult<'tcx> {
     debug!("method_autoderef_steps({:?})", goal);
 

@@ -201,7 +201,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             span: rhs_expr.span,
         });
 
-        let result = self.lookup_op_method(lhs_ty, &[rhs_ty_var], Op::Binary(op, is_assign), expr, lhs_expr);
+        let result =
+            self.lookup_op_method(lhs_ty, &[rhs_ty_var], Op::Binary(op, is_assign), expr, lhs_expr);
 
         // see `NB` above
         let rhs_ty = self.check_expr_coercable_to_type(rhs_expr, rhs_ty_var, Some(lhs_expr));
@@ -404,7 +405,15 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 };
                 if let Ref(_, rty, _) = lhs_ty.kind() {
                     if self.infcx.type_is_copy_modulo_regions(self.param_env, rty, lhs_expr.span)
-                        && self.lookup_op_method(rty, &[rhs_ty], Op::Binary(op, is_assign), expr, lhs_expr).is_ok()
+                        && self
+                            .lookup_op_method(
+                                rty,
+                                &[rhs_ty],
+                                Op::Binary(op, is_assign),
+                                expr,
+                                lhs_expr,
+                            )
+                            .is_ok()
                     {
                         if let Ok(lstring) = source_map.span_to_snippet(lhs_expr.span) {
                             let msg = &format!(
@@ -521,7 +530,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             };
 
             if self
-                .lookup_op_method(fn_sig.output(), &[other_ty], Op::Binary(op, is_assign), expr, lhs_expr)
+                .lookup_op_method(
+                    fn_sig.output(),
+                    &[other_ty],
+                    Op::Binary(op, is_assign),
+                    expr,
+                    lhs_expr,
+                )
                 .is_ok()
             {
                 let (variable_snippet, applicability) = if !fn_sig.inputs().is_empty() {
@@ -803,7 +818,15 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let opname = Ident::with_dummy_span(opname);
         let method = trait_did.and_then(|trait_did| {
             //self.lookup_method_in_trait(span, opname, trait_did, lhs_ty, Some(other_tys))
-            self.lookup_method_in_trait_x2(span, opname, trait_did, lhs_ty, Some(other_tys), call_expr, self_expr)
+            self.lookup_method_in_trait_x2(
+                span,
+                opname,
+                trait_did,
+                lhs_ty,
+                Some(other_tys),
+                call_expr,
+                self_expr,
+            )
         });
 
         match (method, trait_did) {

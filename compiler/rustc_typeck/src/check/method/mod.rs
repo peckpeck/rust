@@ -333,6 +333,129 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         )
     }
 
+    pub(super) fn lookup_method_in_trait_x2(
+        &self,
+        span: Span,
+        m_name: Ident,
+        trait_def_id: DefId,
+        self_ty: Ty<'tcx>,
+        opt_input_types: Option<&[Ty<'tcx>]>,
+        call_expr: &'tcx hir::Expr<'tcx>,
+        self_expr: &'tcx hir::Expr<'tcx>,
+    ) -> Option<InferOk<'tcx, MethodCallee<'tcx>>> {
+
+   //     self.lookup_method_in_trait(span, m_name,trait_def_id,self_ty,opt_input_types ) /*
+        debug!(
+            "lookup_in_trait_adjusted_x2(self_ty={:?}, m_name={}, trait_def_id={:?}, opt_input_types={:?})",
+            self_ty, m_name, trait_def_id, opt_input_types
+        );
+
+
+        let opt_second_type = if let Some(x) = opt_input_types {
+            if x.len() == 0 { None } else {
+                Some(x[0].clone())
+            }
+        } else { None };
+
+        let pick = self.probe_for_op_name(
+            span,
+            m_name,
+            IsSuggestion(false),
+            self_ty,
+            call_expr.hir_id,
+            trait_def_id,
+            opt_second_type,
+        ).ok()?;
+
+        //let pick =
+        //    self.lookup_probe(span, m_name, self_ty, call_expr, ProbeScope::GivenTrait(trait_def_id)).ok()?;
+
+        //let pick = self.probe_for_x2(span, m_name, self_ty, trait_def_id, call_expr.hir_id).ok()?;
+
+        debug!("pick_x2={:?}",pick);
+
+        let result =
+            self.confirm_method(span, self_expr, call_expr, self_ty, pick.clone(), &hir::PathSegment::from_ident(m_name));
+
+        debug!("result_x2={:?}",result);
+
+        let def_id = result.callee.def_id;
+
+        // Construct a trait-reference `self_ty : Trait<input_tys>`
+        let substs = InternalSubsts::for_item(self.tcx, trait_def_id, |param, _| {
+            match param.kind {
+                GenericParamDefKind::Lifetime | GenericParamDefKind::Const { .. } => {}
+                GenericParamDefKind::Type { .. } => {
+                    if param.index == 0 {
+                        return self_ty.into();
+                    } else if let Some(input_types) = opt_input_types {
+                        return input_types[param.index as usize - 1].into();
+                    }
+                }
+            }
+            self.var_for_def(span, param)
+        });
+
+        let mut obligations = vec![];
+
+        // Instantiate late-bound regions and substitute the trait
+        // parameters into the method type to get the actual method type.
+        //
+        // N.B., instantiate late-bound regions first so that
+        // `instantiate_type_scheme` can normalize associated types that
+        // may reference those regions.
+        let fn_sig = self.tcx.fn_sig(def_id);
+        let fn_sig = self.replace_bound_vars_with_fresh_vars(span, infer::FnCall, fn_sig).0;
+        let fn_sig = fn_sig.subst(self.tcx, substs);
+
+        let InferOk { value, obligations: _o } =
+            self.normalize_associated_types_in_as_infer_ok(span, fn_sig);
+        let fn_sig = {
+            //obligations.extend(o);
+            value
+        };
+        let _ = fn_sig;
+
+
+        // Register obligations for the parameters. This will include the
+        // `Self` parameter, which in turn has a bound of the main trait,
+        // so this also effectively registers `obligation` as well.  (We
+        // used to register `obligation` explicitly, but that resulted in
+        // double error messages being reported.)
+        //
+        // Note that as the method comes from a trait, it should not have
+        // any late-bound regions appearing in its bounds.
+        let bounds = self.tcx.predicates_of(def_id).instantiate(self.tcx, substs);
+
+        let InferOk { value, obligations: o } =
+            self.normalize_associated_types_in_as_infer_ok(span, bounds);
+        let bounds = {
+            obligations.extend(o);
+            value
+        };
+
+        assert!(!bounds.has_escaping_bound_vars());
+
+/*        let cause = traits::ObligationCause::misc(span, self.body_id);
+        obligations.extend(traits::predicates_for_generics(cause.clone(), self.param_env, bounds));
+
+        // Also add an obligation for the method type being well-formed.
+        let method_ty = self.tcx.mk_fn_ptr(ty::Binder::dummy(fn_sig));
+        debug!(
+            "lookup_in_trait_adjusted_x2: matched method method_ty={:?} obligations={:?}",
+            method_ty, obligations
+        );
+        obligations.push(traits::Obligation::new(
+            cause,
+            self.param_env,
+            ty::Binder::dummy(ty::PredicateKind::WellFormed(method_ty.into())).to_predicate(self.tcx),
+        ));
+*/
+        debug!("_x2 callee = {:?} obligations={:?}", result.callee, obligations);
+
+        Some(InferOk { obligations, value: result.callee })
+    }
+
     /// `lookup_method_in_trait` is used for overloaded operators.
     /// It does a very narrow slice of what the normal probe/confirm path does.
     /// In particular, it doesn't really do any probing: it simply constructs
@@ -352,7 +475,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         opt_input_types: Option<&[Ty<'tcx>]>,
     ) -> Option<InferOk<'tcx, MethodCallee<'tcx>>> {
         debug!(
-            "lookup_in_trait_adjusted(self_ty={:?}, m_name={}, trait_def_id={:?}, opt_input_types={:?})",
+            "lookup_in_trait_adjusted0(self_ty={:?}, m_name={}, trait_def_id={:?}, opt_input_types={:?})",
             self_ty, m_name, trait_def_id, opt_input_types
         );
 
@@ -441,7 +564,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         let callee = MethodCallee { def_id, substs, sig: fn_sig };
 
-        debug!("callee = {:?}", callee);
+        debug!("callee = {:?} obligations={:?}", callee, obligations);
 
         Some(InferOk { obligations, value: callee })
     }

@@ -387,14 +387,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     }
                 }
                 hir::UnOp::Not => {
-                    let result = self.check_user_unop(expr, oprnd_t, unop);
+                    let result = self.check_user_unop(expr, oprnd_t, unop, oprnd);
                     // If it's builtin, we can reuse the type, this helps inference.
                     if !(oprnd_t.is_integral() || *oprnd_t.kind() == ty::Bool) {
                         oprnd_t = result;
                     }
                 }
                 hir::UnOp::Neg => {
-                    let result = self.check_user_unop(expr, oprnd_t, unop);
+                    let result = self.check_user_unop(expr, oprnd_t, unop, oprnd);
                     // If it's builtin, we can reuse the type, this helps inference.
                     if !oprnd_t.is_numeric() {
                         oprnd_t = result;

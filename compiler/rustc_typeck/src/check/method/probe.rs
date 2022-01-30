@@ -335,8 +335,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         scope: ProbeScope,
         op: OP,
     ) -> Result<R, MethodError<'tcx>>
-    where
-        OP: FnOnce(ProbeContext<'a, 'tcx>) -> Result<R, MethodError<'tcx>>,
+        where
+            OP: FnOnce(ProbeContext<'a, 'tcx>) -> Result<R, MethodError<'tcx>>,
     {
         let mut orig_values = OriginalQueryValues::default();
         let param_env_and_self_ty = self.infcx.canonicalize_query(
@@ -463,6 +463,111 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             op(probe_cx)
         })
     }
+
+    #[instrument(level = "debug", skip(self, scope_expr_id))]
+    pub fn probe_for_op_name(
+        &self,
+        span: Span,
+        item_name: Ident,
+        is_suggestion: IsSuggestion,
+        self_ty: Ty<'tcx>,
+        scope_expr_id: hir::HirId,
+        trait_def_id: DefId,
+        second_type: Option<Ty<'tcx>>,
+    ) -> PickResult<'tcx> {
+        // FIXME BPE better debug!
+        debug!(
+            "probe(self_ty={:?}, item_name={}, scope_expr_id={})",
+            self_ty, item_name, scope_expr_id
+        );
+
+        let mut orig_values = OriginalQueryValues::default();
+        let param_env_and_self_ty = self.infcx.canonicalize_query(
+            ParamEnvAnd { param_env: self.param_env, value: self_ty },
+            &mut orig_values,
+        );
+
+        let steps = self.tcx.method_autoderef_steps(param_env_and_self_ty);
+
+        // If our autoderef loop had reached the recursion limit,
+        // report an overflow error, but continue going on with
+        // the truncated autoderef list.
+        if steps.reached_recursion_limit {
+            self.probe(|_| {
+                let ty = &steps
+                    .steps
+                    .last()
+                    .unwrap_or_else(|| span_bug!(span, "reached the recursion limit in 0 steps?"))
+                    .self_ty;
+                let ty = self
+                    .probe_instantiate_query_response(span, &orig_values, ty)
+                    .unwrap_or_else(|_| span_bug!(span, "instantiating {:?} failed?", ty));
+                autoderef::report_autoderef_recursion_limit_error(self.tcx, span, ty.value);
+            });
+        }
+
+        // If we encountered an `_` type or an error type during autoderef, this is
+        // ambiguous.
+        if let Some(bad_ty) = &steps.opt_bad_ty {
+            if is_suggestion.0 {
+                // Ambiguity was encountered during a suggestion. Just keep going.
+                debug!("ProbeContext: encountered ambiguity in suggestion");
+            } else if bad_ty.reached_raw_pointer && !self.tcx.features().arbitrary_self_types {
+                // this case used to be allowed by the compiler,
+                // so we do a future-compat lint here for the 2015 edition
+                // (see https://github.com/rust-lang/rust/issues/46906)
+                if self.tcx.sess.rust_2018() {
+                    self.tcx.sess.emit_err(MethodCallOnUnknownType { span });
+                } else {
+                    self.tcx.struct_span_lint_hir(
+                        lint::builtin::TYVAR_BEHIND_RAW_POINTER,
+                        scope_expr_id,
+                        span,
+                        |lint| lint.build("type annotations needed").emit(),
+                    );
+                }
+            } else {
+                // Encountered a real ambiguity, so abort the lookup. If `ty` is not
+                // an `Err`, report the right "type annotations needed" error pointing
+                // to it.
+                let ty = &bad_ty.ty;
+                let ty = self
+                    .probe_instantiate_query_response(span, &orig_values, ty)
+                    .unwrap_or_else(|_| span_bug!(span, "instantiating {:?} failed?", ty));
+                let ty = self.structurally_resolved_type(span, ty.value);
+                assert!(matches!(ty.kind(), ty::Error(_)));
+                return Err(MethodError::NoMatch(NoMatchData::new(
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    Mode::MethodCall,
+                )));
+            }
+        }
+
+        debug!("ProbeContext: steps for self_ty={:?} are {:?}", self_ty, steps);
+
+        // this creates one big transaction so that all type variables etc
+        // that we create during the probe process are removed later
+        self.probe(|_| {
+            let mut probe_cx = ProbeContext::new(
+                self,
+                span,
+                Mode::MethodCall,
+                Some(item_name),
+                None,
+                orig_values,
+                steps.steps,
+                is_suggestion,
+                scope_expr_id,
+            );
+
+            probe_cx.assemble_inherent_candidates();
+            probe_cx.assemble_extension_candidates_for_trait(&smallvec![], trait_def_id);
+            probe_cx.pick()
+        })
+    }
 }
 
 pub fn provide(providers: &mut ty::query::Providers) {
@@ -472,6 +577,7 @@ pub fn provide(providers: &mut ty::query::Providers) {
 fn method_autoderef_steps<'tcx>(
     tcx: TyCtxt<'tcx>,
     goal: CanonicalTyGoal<'tcx>,
+    second_type: Option<Ty<'tcx>>,
 ) -> MethodAutoderefStepsResult<'tcx> {
     debug!("method_autoderef_steps({:?})", goal);
 
@@ -765,7 +871,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             // fcx's fulfillment context after this probe is over.
             // Note: we only normalize `xform_self_ty` here since the normalization
             // of the return type can lead to inference results that prohibit
-            // valid canidates from being found, see issue #85671
+            // valid candidates from being found, see issue #85671
             // FIXME Postponing the normalization of the return type likely only hides a deeper bug,
             // which might be caused by the `param_env` itself. The clauses of the `param_env`
             // maybe shouldn't include `Param`s, but rather fresh variables or be canonicalized,

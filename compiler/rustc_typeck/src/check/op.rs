@@ -731,8 +731,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         lhs_ty: Ty<'tcx>,
         other_tys: &[Ty<'tcx>],
         op: Op,
-        call_expr: &'tcx hir::Expr<'tcx>,
-        self_expr: &'tcx hir::Expr<'tcx>,
+        _call_expr: &'tcx hir::Expr<'tcx>,
+        _self_expr: &'tcx hir::Expr<'tcx>,
     ) -> Result<MethodCallee<'tcx>, Vec<FulfillmentError<'tcx>>> {
         let lang = self.tcx.lang_items();
 
@@ -824,17 +824,15 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 trait_did,
                 lhs_ty,
                 Some(other_tys),
-                call_expr,
-                self_expr,
+                _call_expr,
+                _self_expr,
             )
         });
 
         match (method, trait_did) {
             (Some(ok), _) => {
-                debug!("method_ok_x2");
                 let method = self.register_infer_ok_obligations(ok);
                 self.select_obligations_where_possible(false, |_| {});
-                debug!("method_ok_x2 = {:?}", method);
                 Ok(method)
             }
             (None, None) => Err(vec![]),

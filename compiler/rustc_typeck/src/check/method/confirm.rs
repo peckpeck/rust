@@ -56,6 +56,22 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let mut confirm_cx = ConfirmContext::new(self, span, self_expr, call_expr);
         confirm_cx.confirm(unadjusted_self_ty, pick, segment)
     }
+    pub fn confirm_method_x2(
+        &self,
+        span: Span,
+        self_expr: &'tcx hir::Expr<'tcx>,
+        call_expr: &'tcx hir::Expr<'tcx>,
+        unadjusted_self_ty: Ty<'tcx>,
+        pick: probe::Pick<'tcx>,
+        segment: &hir::PathSegment<'_>,
+    ) -> ConfirmResult<'tcx> {
+        debug!(
+            "confirm(unadjusted_self_ty={:?}, pick={:?}, generic_args={:?})",
+            unadjusted_self_ty, pick, segment.args,
+        );
+            let mut confirm_cx = ConfirmContext::new(self, span, self_expr, call_expr);
+            confirm_cx.confirm_x2(unadjusted_self_ty, pick, segment)
+    }
 }
 
 impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
@@ -135,6 +151,78 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
             sig: method_sig.skip_binder(),
         };
         ConfirmResult { callee, illegal_sized_bound }
+    }
+
+    fn confirm_x2(
+        &mut self,
+        unadjusted_self_ty: Ty<'tcx>,
+        pick: probe::Pick<'tcx>,
+        _segment: &hir::PathSegment<'_>,
+    ) -> ConfirmResult<'tcx>  {
+        // Adjust the self expression the user provided and obtain the adjusted type.
+        let self_ty = self.adjust_self_ty(unadjusted_self_ty, &pick);
+
+        // Create substitutions for the method's type parameters.
+        let all_substs = self.fresh_receiver_substs(self_ty, &pick);
+        //let all_substs = self.instantiate_method_substs(&pick, segment, rcvr_substs);
+
+        debug!("all_substs={:?}", all_substs);
+
+        // Create the final signature for the method, replacing late-bound regions.
+        let (method_sig, method_predicates) = self.instantiate_method_sig(&pick, all_substs);
+
+        // Unify the (adjusted) self type with what the method expects.
+        //
+        // SUBTLE: if we want good error messages, because of "guessing" while matching
+        // traits, no trait system method can be called before this point because they
+        // could alter our Self-type, except for normalizing the receiver from the
+        // signature (which is also done during probing).
+        let method_sig_rcvr = self.normalize_associated_types_in(self.span, method_sig.inputs()[0]);
+        debug!(
+            "confirm_x2: self_ty={:?} method_sig_rcvr={:?} method_sig={:?} method_predicates={:?}",
+            self_ty, method_sig_rcvr, method_sig, method_predicates
+        );
+        self.unify_receivers(self_ty, method_sig_rcvr, &pick, all_substs);
+
+        // BPE Problem here, but why ?
+        let (method_sig, method_predicates) =
+            self.normalize_associated_types_in(self.span, (method_sig, method_predicates));
+        let method_sig = ty::Binder::dummy(method_sig);
+
+        // Make sure nobody calls `drop()` explicitly.
+        self.enforce_illegal_method_limitations(&pick);
+
+        // If there is a `Self: Sized` bound and `Self` is a trait object, it is possible that
+        // something which derefs to `Self` actually implements the trait and the caller
+        // wanted to make a static dispatch on it but forgot to import the trait.
+        // See test `src/test/ui/issue-35976.rs`.
+        //
+        // In that case, we'll error anyway, but we'll also re-run the search with all traits
+        // in scope, and if we find another method which can be used, we'll output an
+        // appropriate hint suggesting to import the trait.
+        let _illegal_sized_bound = self.predicates_require_illegal_sized_bound(&method_predicates);
+
+        // Add any trait/regions obligations specified on the method's type parameters.
+        // We won't add these if we encountered an illegal sized bound, so that we can use
+        // a custom error in that case.
+        // BPE Problem here, but why ?
+
+        if _illegal_sized_bound.is_none() {
+            self.add_obligations(
+                self.tcx.mk_fn_ptr(method_sig),
+                all_substs,
+                method_predicates,
+                pick.item.def_id,
+            );
+        }
+
+        // Create the final `MethodCallee`.
+        let callee = MethodCallee {
+            def_id: pick.item.def_id,
+            substs: all_substs,
+            sig: method_sig.skip_binder(),
+        };
+        ConfirmResult { callee, illegal_sized_bound: None }
     }
 
     ///////////////////////////////////////////////////////////////////////////

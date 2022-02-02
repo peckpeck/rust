@@ -240,6 +240,9 @@ pub enum ProbeScope {
 
     // Assemble candidates coming from all traits.
     AllTraits,
+
+    // Assemble candidates coming from a specific trait.
+    GivenTrait(DefId),
 }
 
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
@@ -459,6 +462,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     probe_cx.assemble_extension_candidates_for_traits_in_scope(scope_expr_id)
                 }
                 ProbeScope::AllTraits => probe_cx.assemble_extension_candidates_for_all_traits(),
+                ProbeScope::GivenTrait(trait_def_id) => probe_cx.assemble_extension_candidates_for_trait(&smallvec![], trait_def_id),
             };
             op(probe_cx)
         })
@@ -473,7 +477,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         self_ty: Ty<'tcx>,
         scope_expr_id: hir::HirId,
         trait_def_id: DefId,
-        second_type: Option<Ty<'tcx>>,
+        _second_type: Option<Ty<'tcx>>,
     ) -> PickResult<'tcx> {
         // FIXME BPE better debug!
         debug!(
@@ -508,7 +512,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         // If we encountered an `_` type or an error type during autoderef, this is
         // ambiguous.
-        if let Some(bad_ty) = &steps.opt_bad_ty {
+/*        if let Some(bad_ty) = &steps.opt_bad_ty {
             if is_suggestion.0 {
                 // Ambiguity was encountered during a suggestion. Just keep going.
                 debug!("ProbeContext: encountered ambiguity in suggestion");
@@ -544,7 +548,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     Mode::MethodCall,
                 )));
             }
-        }
+        }*/
 
         debug!("ProbeContext: steps for self_ty={:?} are {:?}", self_ty, steps);
 

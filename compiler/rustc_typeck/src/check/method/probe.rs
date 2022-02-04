@@ -462,7 +462,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     probe_cx.assemble_extension_candidates_for_traits_in_scope(scope_expr_id)
                 }
                 ProbeScope::AllTraits => probe_cx.assemble_extension_candidates_for_all_traits(),
-                ProbeScope::GivenTrait(trait_def_id) => probe_cx.assemble_extension_candidates_for_trait(&smallvec![], trait_def_id),
+                ProbeScope::GivenTrait(trait_def_id) => {
+                    probe_cx.assemble_extension_candidates_for_trait(&smallvec![], trait_def_id)
+                }
             };
             op(probe_cx)
         })
@@ -512,7 +514,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         // If we encountered an `_` type or an error type during autoderef, this is
         // ambiguous.
-/*        if let Some(bad_ty) = &steps.opt_bad_ty {
+        /*        if let Some(bad_ty) = &steps.opt_bad_ty {
             if is_suggestion.0 {
                 // Ambiguity was encountered during a suggestion. Just keep going.
                 debug!("ProbeContext: encountered ambiguity in suggestion");

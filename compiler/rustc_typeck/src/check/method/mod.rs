@@ -23,7 +23,6 @@ use rustc_middle::ty::subst::Subst;
 use rustc_middle::ty::subst::{InternalSubsts, SubstsRef};
 use rustc_middle::ty::GenericParamDefKind;
 use rustc_middle::ty::{self, ToPredicate, Ty, TypeFoldable};
-//use rustc_middle::ty::{self, ToPredicate, Ty};
 use rustc_span::symbol::Ident;
 use rustc_span::Span;
 use rustc_trait_selection::traits;
@@ -198,17 +197,25 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         span: Span,
         call_expr: &'tcx hir::Expr<'tcx>,
         self_expr: &'tcx hir::Expr<'tcx>,
-        args: &'tcx [hir::Expr<'tcx>],
+        args: Option<&'tcx [hir::Expr<'tcx>]>,
+        trait_def_id: Option<DefId>,
     ) -> Result<MethodCallee<'tcx>, MethodError<'tcx>> {
         debug!(
             "lookup(method_name={}, self_ty={:?}, call_expr={:?}, self_expr={:?})",
             segment.ident, self_ty, call_expr, self_expr
         );
 
-        let pick =
-            self.lookup_probe(span, segment.ident, self_ty, call_expr, ProbeScope::TraitsInScope)?;
+        let scope = match trait_def_id {
+            None => ProbeScope::TraitsInScope,
+            Some(trait_id) => ProbeScope::GivenTrait(trait_id),
+        };
 
-        self.lint_dot_call_from_2018(self_ty, segment, span, call_expr, self_expr, &pick, args);
+        let pick =
+            self.lookup_probe(span, segment.ident, self_ty, call_expr, scope)?;
+
+        if let Some(args) = args {
+            self.lint_dot_call_from_2018(self_ty, segment, span, call_expr, self_expr, &pick, args);
+        }
 
         for import_id in &pick.import_ids {
             debug!("used_trait_import: {:?}", import_id);
@@ -235,7 +242,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     segment.ident,
                     trait_type,
                     call_expr,
-                    ProbeScope::TraitsInScope,
+                    scope,
                 ) {
                     Ok(ref new_pick) if *new_pick != pick => {
                         needs_mut = true;
@@ -250,92 +257,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 segment.ident,
                 self_ty,
                 call_expr,
-                ProbeScope::AllTraits,
-            ) {
-                // If we find a different result the caller probably forgot to import a trait.
-                Ok(ref new_pick) if *new_pick != pick => vec![new_pick.item.container.id()],
-                Err(Ambiguity(ref sources)) => sources
-                    .iter()
-                    .filter_map(|source| {
-                        match *source {
-                            // Note: this cannot come from an inherent impl,
-                            // because the first probing succeeded.
-                            ImplSource(def) => self.tcx.trait_id_of_impl(def),
-                            TraitSource(_) => None,
-                        }
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            };
-
-            return Err(IllegalSizedBound(candidates, needs_mut, span));
-        }
-
-        Ok(result.callee)
-    }
-
-    #[instrument(level = "debug", skip(self, call_expr, self_expr))]
-    pub fn lookup_method_x2(
-        &self,
-        self_ty: Ty<'tcx>,
-        segment: &hir::PathSegment<'_>,
-        span: Span,
-        call_expr: &'tcx hir::Expr<'tcx>,
-        self_expr: &'tcx hir::Expr<'tcx>,
-        //args: &'tcx [hir::Expr<'tcx>],
-        trait_def_id: DefId,
-    ) -> Result<MethodCallee<'tcx>, MethodError<'tcx>> {
-        debug!(
-            "lookup(method_name={}, self_ty={:?}, call_expr={:?}, self_expr={:?})",
-            segment.ident, self_ty, call_expr, self_expr
-        );
-
-        let pick =
-            self.lookup_probe(span, segment.ident, self_ty, call_expr, ProbeScope::GivenTrait(trait_def_id))?;
-
-        //self.lint_dot_call_from_2018(self_ty, segment, span, call_expr, self_expr, &pick, args);
-
-        for import_id in &pick.import_ids {
-            debug!("used_trait_import: {:?}", import_id);
-            Lrc::get_mut(&mut self.typeck_results.borrow_mut().used_trait_imports)
-                .unwrap()
-                .insert(*import_id);
-        }
-
-        self.tcx.check_stability(pick.item.def_id, Some(call_expr.hir_id), span, None);
-
-        let result =
-            self.confirm_method(span, self_expr, call_expr, self_ty, pick.clone(), segment);
-        debug!("result = {:?}", result);
-
-        if let Some(span) = result.illegal_sized_bound {
-            let mut needs_mut = false;
-            if let ty::Ref(region, t_type, mutability) = self_ty.kind() {
-                let trait_type = self
-                    .tcx
-                    .mk_ref(region, ty::TypeAndMut { ty: t_type, mutbl: mutability.invert() });
-                // We probe again to see if there might be a borrow mutability discrepancy.
-                match self.lookup_probe(
-                    span,
-                    segment.ident,
-                    trait_type,
-                    call_expr,
-                    ProbeScope::TraitsInScope,
-                ) {
-                    Ok(ref new_pick) if *new_pick != pick => {
-                        needs_mut = true;
-                    }
-                    _ => {}
-                }
-            }
-
-            // We probe again, taking all traits into account (not only those in scope).
-            let candidates = match self.lookup_probe(
-                span,
-                segment.ident,
-                self_ty,
-                call_expr,
-                ProbeScope::AllTraits,
+                scope,
             ) {
                 // If we find a different result the caller probably forgot to import a trait.
                 Ok(ref new_pick) if *new_pick != pick => vec![new_pick.item.container.id()],
@@ -419,27 +341,37 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         )
     }
 
-    pub(super) fn lookup_method_in_trait_x2(
-            &self,
-            span: Span,
-            m_name: Ident,
-            trait_def_id: DefId,
-            self_ty: Ty<'tcx>,
-            _opt_input_types: Option<&[Ty<'tcx>]>,
-            _call_expr: &'tcx hir::Expr<'tcx>,
-            _self_expr: &'tcx hir::Expr<'tcx>,
-        ) -> Option<InferOk<'tcx, MethodCallee<'tcx>>> {
+    pub(super) fn lookup_method_in_trait_with_autoref(
+        &self,
+        span: Span,
+        m_name: Ident,
+        trait_def_id: DefId,
+        self_ty: Ty<'tcx>,
+        opt_input_types: Option<&[Ty<'tcx>]>,
+        call_expr: &'tcx hir::Expr<'tcx>,
+        self_expr: &'tcx hir::Expr<'tcx>,
+    ) -> Option<InferOk<'tcx, MethodCallee<'tcx>>> {
         // I don't know why but lookup_method doesn't work when autoref is not needed
-        let output = self.lookup_method_in_trait(span, m_name,trait_def_id,self_ty,_opt_input_types );
+        // anyway it makes things faster when there is a trait
+        let output =
+            self.lookup_method_in_trait(span, m_name, trait_def_id, self_ty, opt_input_types);
         if output.is_some() {
             return output;
         }
 
-        let result = self.lookup_method_x2(self_ty, &hir::PathSegment::from_ident(m_name),
-            span, _call_expr, _self_expr,
-            trait_def_id).ok()?;
+        let result = self
+            .lookup_method(
+                self_ty,
+                &hir::PathSegment::from_ident(m_name),
+                span,
+                call_expr,
+                self_expr,
+                None,
+                Some(trait_def_id),
+            )
+            .ok()?;
 
-        // we should have real obligation here
+        // I think obligations are already checked with confirm method from lookup method
         Some(InferOk { obligations: vec![], value: result })
     }
 

@@ -69,8 +69,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             "confirm(unadjusted_self_ty={:?}, pick={:?}, generic_args={:?})",
             unadjusted_self_ty, pick, segment.args,
         );
-            let mut confirm_cx = ConfirmContext::new(self, span, self_expr, call_expr);
-            confirm_cx.confirm_x2(unadjusted_self_ty, pick, segment)
+        let mut confirm_cx = ConfirmContext::new(self, span, self_expr, call_expr);
+        confirm_cx.confirm_x2(unadjusted_self_ty, pick, segment)
     }
 }
 
@@ -158,7 +158,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         unadjusted_self_ty: Ty<'tcx>,
         pick: probe::Pick<'tcx>,
         _segment: &hir::PathSegment<'_>,
-    ) -> ConfirmResult<'tcx>  {
+    ) -> ConfirmResult<'tcx> {
         // Adjust the self expression the user provided and obtain the adjusted type.
         let self_ty = self.adjust_self_ty(unadjusted_self_ty, &pick);
 

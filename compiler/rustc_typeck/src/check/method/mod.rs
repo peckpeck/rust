@@ -127,6 +127,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             self_ty,
             call_expr_id,
             ProbeScope::TraitsInScope,
+            None,
         ) {
             Ok(..) => true,
             Err(NoMatch(..)) => false,
@@ -157,6 +158,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 self_ty,
                 call_expr.hir_id,
                 ProbeScope::TraitsInScope,
+                None,
             )
             .map(|pick| {
                 let sig = self.tcx.fn_sig(pick.item.def_id);
@@ -303,6 +305,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             self_ty,
             call_expr.hir_id,
             scope,
+            None,
         )
     }
 
@@ -572,6 +575,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             self_ty,
             expr_id,
             ProbeScope::TraitsInScope,
+            None,
         )?;
 
         self.lint_fully_qualified_call_from_2018(

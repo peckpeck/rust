@@ -354,7 +354,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         self_ty: Ty<'tcx>,
         scope_expr_id: hir::HirId,
         scope: ProbeScope,
-        _opt_input_type: Option<Ty<'tcx>>,
+        opt_input_type: Option<Ty<'tcx>>,
         op: OP,
     ) -> Result<R, MethodError<'tcx>>
     where
@@ -363,7 +363,26 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let mut orig_values = OriginalQueryValues::default();
         let steps =
             self.create_steps(span, mode, is_suggestion, self_ty, scope_expr_id, &mut orig_values)?;
-        debug!("ProbeContext: steps for self_ty={:?} are {:?}", self_ty, steps);
+        debug!("ProbeContext_x2: steps for self_ty={:?} are {:?}", self_ty, steps);
+        let (opt_steps, opt_orig_values) = match opt_input_type {
+            None => (None, None),
+            // FIXME BPE is this the right way (regarding orig_values)
+            // Either we split orig_values, and evaluate types separately during stp evaluation,
+            // or we make a single one concerning both types
+            Some(ty) => {
+                let mut orig_values = OriginalQueryValues::default();
+                let steps = self.create_steps(
+                    span,
+                    mode,
+                    is_suggestion,
+                    ty,
+                    scope_expr_id,
+                    &mut orig_values,
+                )?;
+                debug!("ProbeContext_x2: opt_steps for opt_ty={:?} are {:?}", ty, steps);
+                (Some(steps), Some(orig_values))
+            }
+        };
 
         // this creates one big transaction so that all type variables etc
         // that we create during the probe process are removed later
@@ -376,18 +395,21 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 return_type,
                 orig_values,
                 steps.steps,
-                None,
-                None,
+                opt_orig_values,
+                opt_steps.map(|x| x.steps),
                 is_suggestion,
                 scope_expr_id,
             );
 
-            probe_cx.assemble_inherent_candidates();
             match scope {
                 ProbeScope::TraitsInScope => {
+                    probe_cx.assemble_inherent_candidates();
                     probe_cx.assemble_extension_candidates_for_traits_in_scope(scope_expr_id)
                 }
-                ProbeScope::AllTraits => probe_cx.assemble_extension_candidates_for_all_traits(),
+                ProbeScope::AllTraits => {
+                    probe_cx.assemble_inherent_candidates();
+                    probe_cx.assemble_extension_candidates_for_all_traits()
+                },
                 ProbeScope::GivenTrait(trait_def_id) => {
                     probe_cx.assemble_extension_candidates_for_trait(&smallvec![], trait_def_id)
                 }
@@ -1592,7 +1614,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
     fn consider_probe(
         &self,
         self_ty: Ty<'tcx>,
-        _opt_ty: Option<Ty<'tcx>>,
+        opt_ty: Option<Ty<'tcx>>,
         probe: &Candidate<'tcx>,
         possibly_unsatisfied_predicates: &mut Vec<(
             ty::Predicate<'tcx>,
@@ -1604,7 +1626,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
 
         self.probe(|_| {
             // First check that the self type can be related.
-            let sub_obligations = match self
+            let mut sub_obligations = match self
                 .at(&ObligationCause::dummy(), self.param_env)
                 .sup(probe.xform_self_ty, self_ty)
             {
@@ -1614,10 +1636,37 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     return ProbeResult::NoMatch;
                 }
             };
+            match (probe.xform_opt_ty, opt_ty) {
+                (None, None) => {}
+                (Some(ty), None) => {
+                    debug!("--> Expected opt-type {:?}", ty);
+                    return ProbeResult::NoMatch;
+                }
+                (None, Some(ty)) => {
+                    debug!("--> UnExpected opt-type {:?}", ty);
+                    return ProbeResult::NoMatch;
+                }
+                (Some(xform_opt_ty), Some(opt_ty)) => {
+                    // FIXME BPE is that the right way to extend obligations ?
+                    sub_obligations.append(
+                        match self
+                            .at(&ObligationCause::dummy(), self.param_env)
+                            .sup(xform_opt_ty, opt_ty)
+                        {
+                            Ok(InferOk { ref mut obligations, value: () }) => obligations,
+                            Err(err) => {
+                                debug!("--> cannot relate opt-types {:?}", err);
+                                return ProbeResult::NoMatch;
+                            }
+                        },
+                    );
+                }
+            }
 
             let mut result = ProbeResult::Match;
             let mut xform_ret_ty = probe.xform_ret_ty;
             debug!(?xform_ret_ty);
+            debug!("probing0_x2");
 
             let selcx = &mut traits::SelectionContext::new(self);
             let cause = traits::ObligationCause::misc(self.span, self.body_id);

@@ -218,8 +218,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let pick = self.lookup_probe(span, segment.ident, self_ty, call_expr, scope, other_ty)?;
         debug!("pick_x2 = {:?}", pick);
 
+        // not needed for op trait lookup since it's more recent than that
         if let Some(args) = args {
-            // not needed for op trait lookup since it's more recent than that
             self.lint_dot_call_from_2018(self_ty, segment, span, call_expr, self_expr, &pick, args);
         }
 
@@ -358,13 +358,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // and the method must be kept because some use cases remain
 
         // side effect, it seems to pollute the cache
-        let opt_input_types =
+        /*let opt_input_types =
             opt_input_type.as_ref().map(core::slice::from_ref).unwrap_or_default();
         let output =
             self.lookup_method_in_trait(span, m_name, trait_def_id, self_ty, Some(opt_input_types));
         if output.is_some() {
             return output;
-        }
+        }*/
 
         if !self.tcx.features().operator_autoref {
             return None;

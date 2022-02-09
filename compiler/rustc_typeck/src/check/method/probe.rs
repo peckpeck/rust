@@ -361,13 +361,56 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         OP: FnOnce(ProbeContext<'a, 'tcx>) -> Result<R, MethodError<'tcx>>,
     {
         let mut orig_values = OriginalQueryValues::default();
-        let param_env_and_self_ty = self.infcx.canonicalize_query(
-            ParamEnvAnd { param_env: self.param_env, value: self_ty },
-            &mut orig_values,
+        let steps = self.create_steps(span, mode, is_suggestion, self_ty, scope_expr_id, &mut orig_values)?;
+        debug!("ProbeContext: steps for self_ty={:?} are {:?}", self_ty, steps);
+
+        // this creates one big transaction so that all type variables etc
+        // that we create during the probe process are removed later
+        self.probe(|_| {
+            let mut probe_cx = ProbeContext::new(
+                self,
+                span,
+                mode,
+                method_name,
+                return_type,
+                orig_values,
+                steps.steps,
+                None,
+                None,
+                is_suggestion,
+                scope_expr_id,
+            );
+
+            probe_cx.assemble_inherent_candidates();
+            match scope {
+                ProbeScope::TraitsInScope => {
+                    probe_cx.assemble_extension_candidates_for_traits_in_scope(scope_expr_id)
+                }
+                ProbeScope::AllTraits => probe_cx.assemble_extension_candidates_for_all_traits(),
+                ProbeScope::GivenTrait(trait_def_id) => {
+                    probe_cx.assemble_extension_candidates_for_trait(&smallvec![], trait_def_id)
+                }
+            };
+            op(probe_cx)
+        })
+    }
+
+    fn create_steps(
+        &self,
+        span: Span,
+        mode: Mode,
+        is_suggestion: IsSuggestion,
+        ty: Ty<'tcx>,
+        scope_expr_id: hir::HirId,
+        orig_values: &mut OriginalQueryValues<'tcx>,
+    ) -> Result<MethodAutoderefStepsResult<'tcx>, MethodError<'tcx>> {
+        let param_env_and_ty = self.infcx.canonicalize_query(
+            ParamEnvAnd { param_env: self.param_env, value: ty },
+            orig_values,
         );
 
         let steps = if mode == Mode::MethodCall {
-            self.tcx.method_autoderef_steps(param_env_and_self_ty)
+            self.tcx.method_autoderef_steps(param_env_and_ty)
         } else {
             self.infcx.probe(|_| {
                 // Mode::Path - the deref steps is "trivial". This turns
@@ -376,20 +419,20 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // special handling for this "trivial case" is a good idea.
 
                 let infcx = &self.infcx;
-                let (ParamEnvAnd { param_env: _, value: self_ty }, canonical_inference_vars) =
+                let (ParamEnvAnd { param_env: _, value: ty }, canonical_inference_vars) =
                     infcx.instantiate_canonical_with_fresh_inference_vars(
                         span,
-                        &param_env_and_self_ty,
+                        &param_env_and_ty,
                     );
                 debug!(
-                    "probe_op: Mode::Path, param_env_and_self_ty={:?} self_ty={:?}",
-                    param_env_and_self_ty, self_ty
+                    "probe_op: Mode::Path, param_env_and_ty={:?} ty={:?}",
+                    param_env_and_ty, ty
                 );
                 MethodAutoderefStepsResult {
                     steps: Lrc::new(vec![CandidateStep {
                         self_ty: self.make_query_response_ignoring_pending_obligations(
                             canonical_inference_vars,
-                            self_ty,
+                            ty,
                         ),
                         autoderefs: 0,
                         from_unsafe_deref: false,
@@ -457,145 +500,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 )));
             }
         }
-
-        debug!("ProbeContext: steps for self_ty={:?} are {:?}", self_ty, steps);
-
-        // this creates one big transaction so that all type variables etc
-        // that we create during the probe process are removed later
-        self.probe(|_| {
-            let mut probe_cx = ProbeContext::new(
-                self,
-                span,
-                mode,
-                method_name,
-                return_type,
-                orig_values,
-                steps.steps,
-                None,
-                None,
-                is_suggestion,
-                scope_expr_id,
-            );
-
-            probe_cx.assemble_inherent_candidates();
-            match scope {
-                ProbeScope::TraitsInScope => {
-                    probe_cx.assemble_extension_candidates_for_traits_in_scope(scope_expr_id)
-                }
-                ProbeScope::AllTraits => probe_cx.assemble_extension_candidates_for_all_traits(),
-                ProbeScope::GivenTrait(trait_def_id) => {
-                    probe_cx.assemble_extension_candidates_for_trait(&smallvec![], trait_def_id)
-                }
-            };
-            op(probe_cx)
-        })
+        Ok(steps)
     }
 
-    #[instrument(level = "debug", skip(self, scope_expr_id))]
-    pub fn probe_for_op_name(
-        &self,
-        span: Span,
-        item_name: Ident,
-        is_suggestion: IsSuggestion,
-        self_ty: Ty<'tcx>,
-        scope_expr_id: hir::HirId,
-        trait_def_id: DefId,
-        _second_type: Option<Ty<'tcx>>,
-    ) -> PickResult<'tcx> {
-        // FIXME BPE better debug!
-        debug!(
-            "probe(self_ty={:?}, item_name={}, scope_expr_id={})",
-            self_ty, item_name, scope_expr_id
-        );
-
-        let mut orig_values = OriginalQueryValues::default();
-        let param_env_and_self_ty = self.infcx.canonicalize_query(
-            ParamEnvAnd { param_env: self.param_env, value: self_ty },
-            &mut orig_values,
-        );
-
-        let steps = self.tcx.method_autoderef_steps(param_env_and_self_ty);
-
-        // If our autoderef loop had reached the recursion limit,
-        // report an overflow error, but continue going on with
-        // the truncated autoderef list.
-        if steps.reached_recursion_limit {
-            self.probe(|_| {
-                let ty = &steps
-                    .steps
-                    .last()
-                    .unwrap_or_else(|| span_bug!(span, "reached the recursion limit in 0 steps?"))
-                    .self_ty;
-                let ty = self
-                    .probe_instantiate_query_response(span, &orig_values, ty)
-                    .unwrap_or_else(|_| span_bug!(span, "instantiating {:?} failed?", ty));
-                autoderef::report_autoderef_recursion_limit_error(self.tcx, span, ty.value);
-            });
-        }
-
-        // If we encountered an `_` type or an error type during autoderef, this is
-        // ambiguous.
-        /*        if let Some(bad_ty) = &steps.opt_bad_ty {
-            if is_suggestion.0 {
-                // Ambiguity was encountered during a suggestion. Just keep going.
-                debug!("ProbeContext: encountered ambiguity in suggestion");
-            } else if bad_ty.reached_raw_pointer && !self.tcx.features().arbitrary_self_types {
-                // this case used to be allowed by the compiler,
-                // so we do a future-compat lint here for the 2015 edition
-                // (see https://github.com/rust-lang/rust/issues/46906)
-                if self.tcx.sess.rust_2018() {
-                    self.tcx.sess.emit_err(MethodCallOnUnknownType { span });
-                } else {
-                    self.tcx.struct_span_lint_hir(
-                        lint::builtin::TYVAR_BEHIND_RAW_POINTER,
-                        scope_expr_id,
-                        span,
-                        |lint| lint.build("type annotations needed").emit(),
-                    );
-                }
-            } else {
-                // Encountered a real ambiguity, so abort the lookup. If `ty` is not
-                // an `Err`, report the right "type annotations needed" error pointing
-                // to it.
-                let ty = &bad_ty.ty;
-                let ty = self
-                    .probe_instantiate_query_response(span, &orig_values, ty)
-                    .unwrap_or_else(|_| span_bug!(span, "instantiating {:?} failed?", ty));
-                let ty = self.structurally_resolved_type(span, ty.value);
-                assert!(matches!(ty.kind(), ty::Error(_)));
-                return Err(MethodError::NoMatch(NoMatchData::new(
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    None,
-                    Mode::MethodCall,
-                )));
-            }
-        }*/
-
-        debug!("ProbeContext: steps for self_ty={:?} are {:?}", self_ty, steps);
-
-        // this creates one big transaction so that all type variables etc
-        // that we create during the probe process are removed later
-        self.probe(|_| {
-            let mut probe_cx = ProbeContext::new(
-                self,
-                span,
-                Mode::MethodCall,
-                Some(item_name),
-                None,
-                orig_values,
-                steps.steps,
-                None,
-                None,
-                is_suggestion,
-                scope_expr_id,
-            );
-
-            probe_cx.assemble_extension_candidates_for_trait(&smallvec![], trait_def_id);
-            probe_cx.pick()
-        })
-    }
 }
 
 pub fn provide(providers: &mut ty::query::Providers) {

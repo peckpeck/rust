@@ -962,6 +962,7 @@ symbols! {
         on_unimplemented,
         oom,
         opaque,
+        operator_autoref,
         ops,
         opt_out_copy,
         optimize,

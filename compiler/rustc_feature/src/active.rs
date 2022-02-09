@@ -465,6 +465,9 @@ declare_features! (
     /// In that case, `dyn Trait: Trait` does not hold. Moreover, coercions and
     /// casts in safe Rust to `dyn Trait` for such a `Trait` is also forbidden.
     (active, object_safe_for_dispatch, "1.40.0", Some(43561), None),
+    /// Allows automatically reference and dereference operator traits parameters
+    /// such as std::ops::Add
+    (incomplete, operator_autoref, "1.0.0", Some(44762), None),
     /// Allows using `#[optimize(X)]`.
     (active, optimize_attribute, "1.34.0", Some(54882), None),
     /// Allows `extern "platform-intrinsic" { ... }`.

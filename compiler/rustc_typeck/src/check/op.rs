@@ -201,8 +201,18 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             span: rhs_expr.span,
         });
 
-        let result =
-            self.lookup_op_method(lhs_ty, &[rhs_ty_var], Op::Binary(op, is_assign), expr, lhs_expr);
+        // see `NB` above
+        let rhs_ty = self.check_expr_coercable_to_type(rhs_expr, rhs_ty_var, Some(lhs_expr));
+        let rhs_ty = self.resolve_vars_with_obligations(rhs_ty);
+
+        let result = self.lookup_op_method(
+            lhs_ty,
+            Some(rhs_ty),
+            Op::Binary(op, is_assign),
+            expr,
+            lhs_expr,
+            Some(rhs_expr),
+        ); // what about unop
 
         // see `NB` above
         let rhs_ty = self.check_expr_coercable_to_type(rhs_expr, rhs_ty_var, Some(lhs_expr));
@@ -408,10 +418,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         && self
                             .lookup_op_method(
                                 rty,
-                                &[rhs_ty],
+                                Some(rhs_ty),
                                 Op::Binary(op, is_assign),
                                 expr,
                                 lhs_expr,
+                                Some(rhs_expr),
                             )
                             .is_ok()
                     {
@@ -456,10 +467,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             let needs_bound = self
                                 .lookup_op_method(
                                     eraser.fold_ty(lhs_ty),
-                                    &[eraser.fold_ty(rhs_ty)],
+                                    Some(eraser.fold_ty(rhs_ty)),
                                     Op::Binary(op, is_assign),
                                     expr,
                                     lhs_expr,
+                                    Some(rhs_expr),
                                 )
                                 .is_ok();
                             if needs_bound {
@@ -532,10 +544,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             if self
                 .lookup_op_method(
                     fn_sig.output(),
-                    &[other_ty],
+                    Some(other_ty),
                     Op::Binary(op, is_assign),
                     expr,
                     lhs_expr,
+                    None,
                 )
                 .is_ok()
             {
@@ -655,7 +668,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         lhs_expr: &'tcx hir::Expr<'tcx>,
     ) -> Ty<'tcx> {
         assert!(op.is_by_value());
-        match self.lookup_op_method(operand_ty, &[], Op::Unary(op, ex.span), ex, lhs_expr) {
+        match self.lookup_op_method(operand_ty, None, Op::Unary(op, ex.span), ex, lhs_expr, None) {
             Ok(method) => {
                 self.write_method_call(ex.hir_id, method);
                 method.sig.output()
@@ -729,10 +742,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     fn lookup_op_method(
         &self,
         lhs_ty: Ty<'tcx>,
-        other_tys: &[Ty<'tcx>],
+        other_ty: Option<Ty<'tcx>>,
         op: Op,
         _call_expr: &'tcx hir::Expr<'tcx>,
         _self_expr: &'tcx hir::Expr<'tcx>,
+        _other_expr: Option<&'tcx hir::Expr<'tcx>>,
     ) -> Result<MethodCallee<'tcx>, Vec<FulfillmentError<'tcx>>> {
         let lang = self.tcx.lang_items();
 
@@ -823,9 +837,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 opname,
                 trait_did,
                 lhs_ty,
-                Some(other_tys),
+                other_ty,
                 _call_expr,
                 _self_expr,
+                _other_expr,
             )
         });
 
@@ -837,6 +852,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
             (None, None) => Err(vec![]),
             (None, Some(trait_did)) => {
+                let other_tys = other_ty.as_ref().map(core::slice::from_ref).unwrap_or_default();
                 let (obligation, _) =
                     self.obligation_for_method(span, trait_did, lhs_ty, Some(other_tys));
                 let mut fulfill = <dyn TraitEngine<'_>>::new(self.tcx);

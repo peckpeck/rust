@@ -189,14 +189,17 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// * `call_expr`:             the complete method call: (`foo.bar::<T1,...Tn>(...)`)
     /// * `self_expr`:             the self expression (`foo`)
     /// * `args`:                  the expressions of the arguments (`a, b + 1, ...`)
+    /// * `opt_input_types`:       generic trait input types other than self (op lookup only)
     #[instrument(level = "debug", skip(self, call_expr, self_expr))]
     pub fn lookup_method(
         &self,
         self_ty: Ty<'tcx>,
+        other_ty: Option<Ty<'tcx>>,
         segment: &hir::PathSegment<'_>,
         span: Span,
         call_expr: &'tcx hir::Expr<'tcx>,
         self_expr: &'tcx hir::Expr<'tcx>,
+        other_expr: Option<&'tcx hir::Expr<'tcx>>,
         args: Option<&'tcx [hir::Expr<'tcx>]>,
         trait_def_id: Option<DefId>,
     ) -> Result<MethodCallee<'tcx>, MethodError<'tcx>> {
@@ -341,35 +344,54 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         )
     }
 
+    #[instrument(level = "debug", skip(self, span, opt_input_type, call_expr, self_expr))]
     pub(super) fn lookup_method_in_trait_with_autoref(
         &self,
         span: Span,
         m_name: Ident,
         trait_def_id: DefId,
         self_ty: Ty<'tcx>,
-        opt_input_types: Option<&[Ty<'tcx>]>,
+        opt_input_type: Option<Ty<'tcx>>,
         call_expr: &'tcx hir::Expr<'tcx>,
         self_expr: &'tcx hir::Expr<'tcx>,
+        other_expr: Option<&'tcx hir::Expr<'tcx>>,
     ) -> Option<InferOk<'tcx, MethodCallee<'tcx>>> {
+        // FIXME BPE
         // I don't know why but lookup_method doesn't work when autoref is not needed
         // anyway it makes things faster when there is a trait
+        // and the method must be kept because some use cases remain
+
+        // side effect, it seems to pollute the cache
+        let opt_input_types =
+            opt_input_type.as_ref().map(core::slice::from_ref).unwrap_or_default();
         let output =
-            self.lookup_method_in_trait(span, m_name, trait_def_id, self_ty, opt_input_types);
+            self.lookup_method_in_trait(span, m_name, trait_def_id, self_ty, Some(opt_input_types));
         if output.is_some() {
             return output;
         }
 
+        if !self.tcx.features().operator_autoref {
+            return None;
+        }
+        debug!("_x2_start");
+
         let result = self
             .lookup_method(
                 self_ty,
+                //opt_input_type,
+                None,
                 &hir::PathSegment::from_ident(m_name),
                 span,
                 call_expr,
                 self_expr,
+                //other_expr,
+                None,
                 None,
                 Some(trait_def_id),
             )
             .ok()?;
+
+        debug!("_x2_end {:?}", result);
 
         // I think obligations are already checked with confirm method from lookup method
         Some(InferOk { obligations: vec![], value: result })
@@ -394,7 +416,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         opt_input_types: Option<&[Ty<'tcx>]>,
     ) -> Option<InferOk<'tcx, MethodCallee<'tcx>>> {
         debug!(
-            "lookup_in_trait_adjusted0(self_ty={:?}, m_name={}, trait_def_id={:?}, opt_input_types={:?})",
+            "lookup_in_trait_adjusted(self_ty={:?}, m_name={}, trait_def_id={:?}, opt_input_types={:?})",
             self_ty, m_name, trait_def_id, opt_input_types
         );
 
@@ -440,10 +462,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let fn_sig = self.replace_bound_vars_with_fresh_vars(span, infer::FnCall, fn_sig).0;
         let fn_sig = fn_sig.subst(self.tcx, substs);
 
-        debug!("sig_x2 {:?}", fn_sig);
         let InferOk { value, obligations: o } =
             self.normalize_associated_types_in_as_infer_ok(span, fn_sig);
-        debug!("sig_x2 {:?}", value);
         let fn_sig = {
             obligations.extend(o);
             value

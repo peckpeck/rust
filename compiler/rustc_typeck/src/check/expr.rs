@@ -1106,7 +1106,17 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let rcvr_t = self.structurally_resolved_type(args[0].span, rcvr_t);
         let span = segment.ident.span;
 
-        let method = match self.lookup_method(rcvr_t, segment, span, expr, rcvr, Some(args), None) {
+        let method = match self.lookup_method(
+            rcvr_t,
+            None,
+            segment,
+            span,
+            expr,
+            rcvr,
+            None,
+            Some(args),
+            None,
+        ) {
             Ok(method) => {
                 // We could add a "consider `foo::<params>`" suggestion here, but I wasn't able to
                 // trigger this codepath causing `structuraly_resolved_type` to emit an error.

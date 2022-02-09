@@ -1471,6 +1471,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     rcvr_ty,
                     rcvr,
                     crate::check::method::probe::ProbeScope::AllTraits,
+                    None,
                 ) {
                     // If the method is defined for the receiver we have, it likely wasn't `use`d.
                     // We point at the method, but we just skip the rest of the check for arbitrary
@@ -1499,6 +1500,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             new_rcvr_t,
                             rcvr,
                             crate::check::method::probe::ProbeScope::AllTraits,
+                            None,
                         ) {
                             debug!("try_alt_rcvr: pick candidate {:?}", pick);
                             let did = Some(pick.item.container.id());

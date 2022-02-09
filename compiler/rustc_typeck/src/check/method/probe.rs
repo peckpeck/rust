@@ -361,7 +361,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         OP: FnOnce(ProbeContext<'a, 'tcx>) -> Result<R, MethodError<'tcx>>,
     {
         let mut orig_values = OriginalQueryValues::default();
-        let steps = self.create_steps(span, mode, is_suggestion, self_ty, scope_expr_id, &mut orig_values)?;
+        let steps =
+            self.create_steps(span, mode, is_suggestion, self_ty, scope_expr_id, &mut orig_values)?;
         debug!("ProbeContext: steps for self_ty={:?} are {:?}", self_ty, steps);
 
         // this creates one big transaction so that all type variables etc
@@ -404,10 +405,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         scope_expr_id: hir::HirId,
         orig_values: &mut OriginalQueryValues<'tcx>,
     ) -> Result<MethodAutoderefStepsResult<'tcx>, MethodError<'tcx>> {
-        let param_env_and_ty = self.infcx.canonicalize_query(
-            ParamEnvAnd { param_env: self.param_env, value: ty },
-            orig_values,
-        );
+        let param_env_and_ty = self
+            .infcx
+            .canonicalize_query(ParamEnvAnd { param_env: self.param_env, value: ty }, orig_values);
 
         let steps = if mode == Mode::MethodCall {
             self.tcx.method_autoderef_steps(param_env_and_ty)
@@ -420,14 +420,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                 let infcx = &self.infcx;
                 let (ParamEnvAnd { param_env: _, value: ty }, canonical_inference_vars) =
-                    infcx.instantiate_canonical_with_fresh_inference_vars(
-                        span,
-                        &param_env_and_ty,
-                    );
-                debug!(
-                    "probe_op: Mode::Path, param_env_and_ty={:?} ty={:?}",
-                    param_env_and_ty, ty
-                );
+                    infcx.instantiate_canonical_with_fresh_inference_vars(span, &param_env_and_ty);
+                debug!("probe_op: Mode::Path, param_env_and_ty={:?} ty={:?}", param_env_and_ty, ty);
                 MethodAutoderefStepsResult {
                     steps: Lrc::new(vec![CandidateStep {
                         self_ty: self.make_query_response_ignoring_pending_obligations(
@@ -502,7 +496,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
         Ok(steps)
     }
-
 }
 
 pub fn provide(providers: &mut ty::query::Providers) {
@@ -614,7 +607,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             is_suggestion,
             scope_expr_id,
         };
-        debug!("{:?} {:?}",x.opt_orig_steps_var_values, x.opt_steps);
+        debug!("{:?} {:?}", x.opt_orig_steps_var_values, x.opt_steps);
         x
     }
 
@@ -874,8 +867,8 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                 item,
                 kind: ObjectCandidate,
                 import_ids: smallvec![],
-            }  ;
-            debug!("{:?}",x.xform_opt_ty);
+            };
+            debug!("{:?}", x.xform_opt_ty);
             this.push_candidate(
                 Candidate {
                     xform_self_ty,
@@ -1213,36 +1206,42 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     .unwrap_or_else(|_| {
                         span_bug!(self.span, "{:?} was applicable but now isn't?", step.self_ty)
                     });
-                self.pick_by_value_method(step, self_ty, None, None, unstable_candidates.as_deref_mut())
+                self.pick_by_value_method(
+                    step,
+                    self_ty,
+                    None,
+                    None,
+                    unstable_candidates.as_deref_mut(),
+                )
+                .or_else(|| {
+                    self.pick_autorefd_method(
+                        step,
+                        self_ty,
+                        None,
+                        None,
+                        hir::Mutability::Not,
+                        unstable_candidates.as_deref_mut(),
+                    )
                     .or_else(|| {
                         self.pick_autorefd_method(
                             step,
                             self_ty,
                             None,
                             None,
-                            hir::Mutability::Not,
+                            hir::Mutability::Mut,
                             unstable_candidates.as_deref_mut(),
                         )
-                        .or_else(|| {
-                            self.pick_autorefd_method(
-                                step,
-                                self_ty,
-                                None,
-                                None,
-                                hir::Mutability::Mut,
-                                unstable_candidates.as_deref_mut(),
-                            )
-                        })
-                        .or_else(|| {
-                            self.pick_const_ptr_method(
-                                step,
-                                self_ty,
-                                None,
-                                None,
-                                unstable_candidates.as_deref_mut(),
-                            )
-                        })
                     })
+                    .or_else(|| {
+                        self.pick_const_ptr_method(
+                            step,
+                            self_ty,
+                            None,
+                            None,
+                            unstable_candidates.as_deref_mut(),
+                        )
+                    })
+                })
             })
             .next()
     }

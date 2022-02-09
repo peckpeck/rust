@@ -201,7 +201,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             span: rhs_expr.span,
         });
 
-        // see `NB` above
+        // FIXME BPE (test in new.rs) see below
         let rhs_ty = self.check_expr_coercable_to_type(rhs_expr, rhs_ty_var, Some(lhs_expr));
         let rhs_ty = self.resolve_vars_with_obligations(rhs_ty);
 

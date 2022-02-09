@@ -215,10 +215,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             Some(trait_id) => ProbeScope::GivenTrait(trait_id),
         };
 
-        let pick =
-            self.lookup_probe(span, segment.ident, self_ty, call_expr, scope)?;
+        let pick = self.lookup_probe(span, segment.ident, self_ty, call_expr, scope, other_ty)?;
+        debug!("pick_x2 = {:?}", pick);
 
         if let Some(args) = args {
+            // not needed for op trait lookup since it's more recent than that
             self.lint_dot_call_from_2018(self_ty, segment, span, call_expr, self_expr, &pick, args);
         }
 
@@ -242,13 +243,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     .tcx
                     .mk_ref(region, ty::TypeAndMut { ty: t_type, mutbl: mutability.invert() });
                 // We probe again to see if there might be a borrow mutability discrepancy.
-                match self.lookup_probe(
-                    span,
-                    segment.ident,
-                    trait_type,
-                    call_expr,
-                    scope,
-                ) {
+                match self.lookup_probe(span, segment.ident, trait_type, call_expr, scope, other_ty)
+                {
                     Ok(ref new_pick) if *new_pick != pick => {
                         needs_mut = true;
                     }
@@ -257,28 +253,23 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
 
             // We probe again, taking all traits into account (not only those in scope).
-            let candidates = match self.lookup_probe(
-                span,
-                segment.ident,
-                self_ty,
-                call_expr,
-                scope,
-            ) {
-                // If we find a different result the caller probably forgot to import a trait.
-                Ok(ref new_pick) if *new_pick != pick => vec![new_pick.item.container.id()],
-                Err(Ambiguity(ref sources)) => sources
-                    .iter()
-                    .filter_map(|source| {
-                        match *source {
-                            // Note: this cannot come from an inherent impl,
-                            // because the first probing succeeded.
-                            ImplSource(def) => self.tcx.trait_id_of_impl(def),
-                            TraitSource(_) => None,
-                        }
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            };
+            let candidates =
+                match self.lookup_probe(span, segment.ident, self_ty, call_expr, scope, other_ty) {
+                    // If we find a different result the caller probably forgot to import a trait.
+                    Ok(ref new_pick) if *new_pick != pick => vec![new_pick.item.container.id()],
+                    Err(Ambiguity(ref sources)) => sources
+                        .iter()
+                        .filter_map(|source| {
+                            match *source {
+                                // Note: this cannot come from an inherent impl,
+                                // because the first probing succeeded.
+                                ImplSource(def) => self.tcx.trait_id_of_impl(def),
+                                TraitSource(_) => None,
+                            }
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
 
             return Err(IllegalSizedBound(candidates, needs_mut, span));
         }
@@ -294,9 +285,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         self_ty: Ty<'tcx>,
         call_expr: &'tcx hir::Expr<'tcx>,
         scope: ProbeScope,
+        opt_input_type: Option<Ty<'tcx>>,
     ) -> probe::PickResult<'tcx> {
         let mode = probe::Mode::MethodCall;
         let self_ty = self.resolve_vars_if_possible(self_ty);
+        let opt_input_type = opt_input_type.map(|x| self.resolve_vars_if_possible(x));
         self.probe_for_name(
             span,
             mode,
@@ -305,7 +298,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             self_ty,
             call_expr.hir_id,
             scope,
-            None,
+            opt_input_type,
         )
     }
 
@@ -381,14 +374,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let result = self
             .lookup_method(
                 self_ty,
-                //opt_input_type,
-                None,
+                opt_input_type,
                 &hir::PathSegment::from_ident(m_name),
                 span,
                 call_expr,
                 self_expr,
-                //other_expr,
-                None,
+                other_expr,
                 None,
                 Some(trait_def_id),
             )

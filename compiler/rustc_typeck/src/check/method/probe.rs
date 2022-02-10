@@ -409,9 +409,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 ProbeScope::AllTraits => {
                     probe_cx.assemble_inherent_candidates();
                     probe_cx.assemble_extension_candidates_for_all_traits()
-                },
+                }
                 ProbeScope::GivenTrait(trait_def_id) => {
-                    probe_cx.assemble_extension_candidates_for_trait(&smallvec![], trait_def_id)
+                    // FIXME BPE put true here to try matching opt type
+                    probe_cx.assemble_extension_candidates_for_trait(
+                        &smallvec![],
+                        trait_def_id,
+                        false,
+                    )
                 }
             };
             op(probe_cx)
@@ -609,7 +614,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         is_suggestion: IsSuggestion,
         scope_expr_id: hir::HirId,
     ) -> ProbeContext<'a, 'tcx> {
-        let x = ProbeContext {
+        ProbeContext {
             fcx,
             span,
             mode,
@@ -628,9 +633,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             unsatisfied_predicates: Vec::new(),
             is_suggestion,
             scope_expr_id,
-        };
-        debug!("{:?} {:?}", x.opt_orig_steps_var_values, x.opt_steps);
-        x
+        }
     }
 
     fn reset(&mut self) {
@@ -882,15 +885,6 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
 
             let (xform_self_ty, xform_ret_ty) =
                 this.xform_self_ty(&item, new_trait_ref.self_ty(), new_trait_ref.substs);
-            let x = Candidate {
-                xform_self_ty,
-                xform_opt_ty: None,
-                xform_ret_ty,
-                item,
-                kind: ObjectCandidate,
-                import_ids: smallvec![],
-            };
-            debug!("{:?}", x.xform_opt_ty);
             this.push_candidate(
                 Candidate {
                     xform_self_ty,
@@ -993,6 +987,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     self.assemble_extension_candidates_for_trait(
                         &trait_candidate.import_ids,
                         trait_did,
+                        false,
                     );
                 }
             }
@@ -1003,7 +998,11 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         let mut duplicates = FxHashSet::default();
         for trait_info in suggest::all_traits(self.tcx) {
             if duplicates.insert(trait_info.def_id) {
-                self.assemble_extension_candidates_for_trait(&smallvec![], trait_info.def_id);
+                self.assemble_extension_candidates_for_trait(
+                    &smallvec![],
+                    trait_info.def_id,
+                    false,
+                );
             }
         }
     }
@@ -1043,8 +1042,12 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         &mut self,
         import_ids: &SmallVec<[LocalDefId; 1]>,
         trait_def_id: DefId,
+        with_opt_parameter: bool,
     ) {
-        debug!("assemble_extension_candidates_for_trait(trait_def_id={:?})", trait_def_id);
+        debug!(
+            "assemble_extension_candidates_for_trait(trait_def_id={:?}), with_opt {:?})",
+            trait_def_id, with_opt_parameter
+        );
         let trait_substs = self.fresh_item_substs(trait_def_id);
         let trait_ref = ty::TraitRef::new(trait_def_id, trait_substs);
 
@@ -1054,19 +1057,38 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             self.elaborate_bounds(bounds, |this, new_trait_ref, item| {
                 let new_trait_ref = this.erase_late_bound_regions(new_trait_ref);
 
-                let (xform_self_ty, xform_ret_ty) =
-                    this.xform_self_ty(&item, new_trait_ref.self_ty(), new_trait_ref.substs);
-                this.push_candidate(
-                    Candidate {
-                        xform_self_ty,
-                        xform_opt_ty: None,
-                        xform_ret_ty,
-                        item,
-                        import_ids: import_ids.clone(),
-                        kind: TraitCandidate(new_trait_ref),
-                    },
-                    false,
-                );
+                if with_opt_parameter {
+                    let (xform_self_ty, xform_opt_ty, xform_ret_ty) = this.xform_self_ty_with_opt(
+                        &item,
+                        new_trait_ref.self_ty(),
+                        new_trait_ref.substs,
+                    );
+                    this.push_candidate(
+                        Candidate {
+                            xform_self_ty,
+                            xform_opt_ty,
+                            xform_ret_ty,
+                            item,
+                            import_ids: import_ids.clone(),
+                            kind: TraitCandidate(new_trait_ref),
+                        },
+                        false,
+                    );
+                } else {
+                    let (xform_self_ty, xform_ret_ty) =
+                        this.xform_self_ty(&item, new_trait_ref.self_ty(), new_trait_ref.substs);
+                    this.push_candidate(
+                        Candidate {
+                            xform_self_ty,
+                            xform_opt_ty: None,
+                            xform_ret_ty,
+                            item,
+                            import_ids: import_ids.clone(),
+                            kind: TraitCandidate(new_trait_ref),
+                        },
+                        false,
+                    );
+                }
             });
         } else {
             debug_assert!(self.tcx.is_trait(trait_def_id));
@@ -1078,19 +1100,35 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     continue;
                 }
 
-                let (xform_self_ty, xform_ret_ty) =
-                    self.xform_self_ty(&item, trait_ref.self_ty(), trait_substs);
-                self.push_candidate(
-                    Candidate {
-                        xform_self_ty,
-                        xform_opt_ty: None,
-                        xform_ret_ty,
-                        item,
-                        import_ids: import_ids.clone(),
-                        kind: TraitCandidate(trait_ref),
-                    },
-                    false,
-                );
+                if with_opt_parameter {
+                    let (xform_self_ty, xform_opt_ty, xform_ret_ty) =
+                        self.xform_self_ty_with_opt(&item, trait_ref.self_ty(), trait_substs);
+                    self.push_candidate(
+                        Candidate {
+                            xform_self_ty,
+                            xform_opt_ty,
+                            xform_ret_ty,
+                            item,
+                            import_ids: import_ids.clone(),
+                            kind: TraitCandidate(trait_ref),
+                        },
+                        false,
+                    );
+                } else {
+                    let (xform_self_ty, xform_ret_ty) =
+                        self.xform_self_ty(&item, trait_ref.self_ty(), trait_substs);
+                    self.push_candidate(
+                        Candidate {
+                            xform_self_ty,
+                            xform_opt_ty: None,
+                            xform_ret_ty,
+                            item,
+                            import_ids: import_ids.clone(),
+                            kind: TraitCandidate(trait_ref),
+                        },
+                        false,
+                    );
+                }
             }
         }
     }
@@ -1209,15 +1247,43 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         mut unstable_candidates: Option<&mut Vec<(Candidate<'tcx>, Symbol)>>,
     ) -> Option<PickResult<'tcx>> {
         let steps = self.steps.clone();
-        steps
-            .iter()
-            .filter(|step| {
-                debug!("pick_all_method: step={:?}", step);
-                // skip types that are from a type error or that would require dereferencing
-                // a raw pointer
-                !step.self_ty.references_error() && !step.from_unsafe_deref
+        let opt_steps = self.opt_steps.clone();
+        for step in steps.iter().filter(|step| {
+            debug!("pick_all_method: step={:?}", step);
+            // skip types that are from a type error or that would require dereferencing
+            // a raw pointer
+            !step.self_ty.references_error() && !step.from_unsafe_deref
+        }) {
+            // iterate on single value None or on sequence of Some(step)
+            let result = match opt_steps {
+                None => {
+                    let i: Box<dyn Iterator<Item = Option<&CandidateStep<'tcx>>>> =
+                        Box::new([None].into_iter());
+                    i
+                }
+                Some(ref v) => {
+                    let i: Box<dyn Iterator<Item = Option<&CandidateStep<'tcx>>>> =
+                        Box::new(v.iter().map(|x| Some(x)));
+                    i
+                }
+            }
+            .filter(|opt_step| {
+                if let Some(step) = opt_step {
+                    debug!("pick_all_method: opt_step={:?}", step);
+                    // skip types that are from a type error or that would require dereferencing
+                    // a raw pointer
+                    !step.self_ty.references_error() && !step.from_unsafe_deref
+                } else {
+                    true
+                }
             })
-            .flat_map(|step| {
+            .flat_map(|opt_step| {
+                // within a cross product step: self.steps x self.opt_steps
+                // FIXME BPE make sure this is the correct iteration order
+                debug!(
+                    "first probe_instantiate_query_response_x2 {:?} for {:?} and {:?}",
+                    self.span, &self.orig_steps_var_values, &step.self_ty
+                );
                 let InferOk { value: self_ty, obligations: _ } = self
                     .fcx
                     .probe_instantiate_query_response(
@@ -1228,6 +1294,27 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     .unwrap_or_else(|_| {
                         span_bug!(self.span, "{:?} was applicable but now isn't?", step.self_ty)
                     });
+                let opt_ty = opt_step.map(|opt_step| {
+                    debug!("second probe_instantiate_query_response_x2");
+                    assert!(self.opt_orig_steps_var_values.is_some());
+                    let InferOk { value: opt_ty, obligations: _ } = self
+                        .fcx
+                        .probe_instantiate_query_response(
+                            self.span,
+                            &self.opt_orig_steps_var_values.as_ref().unwrap(),
+                            &opt_step.self_ty,
+                        )
+                        .unwrap_or_else(|_| {
+                            span_bug!(
+                                self.span,
+                                "{:?} was applicable but now isn't?",
+                                opt_step.self_ty
+                            )
+                        });
+                    opt_ty
+                });
+                debug!("self_type and opt_x2 {:?} {:?}", self_ty, opt_ty);
+                debug!("self_step and opt_x2 {:?} {:?}", step, opt_step);
                 self.pick_by_value_method(
                     step,
                     self_ty,
@@ -1239,8 +1326,8 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     self.pick_autorefd_method(
                         step,
                         self_ty,
-                        None,
-                        None,
+                        opt_step,
+                        opt_ty,
                         hir::Mutability::Not,
                         unstable_candidates.as_deref_mut(),
                     )
@@ -1248,8 +1335,9 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                         self.pick_autorefd_method(
                             step,
                             self_ty,
-                            None,
-                            None,
+                            opt_step,
+                            opt_ty,
+                            // FIXME BPE this should probably be configurable
                             hir::Mutability::Mut,
                             unstable_candidates.as_deref_mut(),
                         )
@@ -1258,14 +1346,19 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                         self.pick_const_ptr_method(
                             step,
                             self_ty,
-                            None,
-                            None,
+                            opt_step,
+                            opt_ty,
                             unstable_candidates.as_deref_mut(),
                         )
                     })
                 })
             })
-            .next()
+            .next();
+            if result.is_some() {
+                return result;
+            }
+        }
+        None
     }
 
     /// For each type `T` in the step list, this attempts to find a method where
@@ -1278,17 +1371,23 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         &mut self,
         step: &CandidateStep<'tcx>,
         self_ty: Ty<'tcx>,
-        _opt_step: Option<&CandidateStep<'tcx>>,
+        opt_step: Option<&CandidateStep<'tcx>>,
         opt_ty: Option<Ty<'tcx>>,
         unstable_candidates: Option<&mut Vec<(Candidate<'tcx>, Symbol)>>,
     ) -> Option<PickResult<'tcx>> {
         if step.unsize {
             return None;
         }
+        if let Some(step) = opt_step {
+            if step.unsize {
+                return None;
+            }
+        }
 
         self.pick_method(self_ty, opt_ty, unstable_candidates).map(|r| {
             r.map(|mut pick| {
                 pick.autoderefs = step.autoderefs;
+                pick.other_autoderefs = opt_step.map(|x| x.autoderefs);
 
                 // Insert a `&*` or `&mut *` if this is a reference type:
                 if let ty::Ref(_, _, mutbl) = *step.self_ty.value.value.kind() {
@@ -1297,6 +1396,19 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                         mutbl,
                         unsize: pick.autoref_or_ptr_adjustment.map_or(false, |a| a.get_unsize()),
                     })
+                }
+                // Insert a `&*` or `&mut *` if this is a reference type:
+                if let Some(opt_step) = opt_step {
+                    if let ty::Ref(_, _, mutbl) = *opt_step.self_ty.value.value.kind() {
+                        pick.other_autoderefs.as_mut().map(|x| *x += 1);
+                        pick.other_autoref_or_ptr_adjustment =
+                            Some(AutorefOrPtrAdjustment::Autoref {
+                                mutbl,
+                                unsize: pick
+                                    .other_autoref_or_ptr_adjustment
+                                    .map_or(false, |a| a.get_unsize()),
+                            })
+                    }
                 }
 
                 pick
@@ -1308,7 +1420,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         &mut self,
         step: &CandidateStep<'tcx>,
         self_ty: Ty<'tcx>,
-        _opt_step: Option<&CandidateStep<'tcx>>,
+        opt_step: Option<&CandidateStep<'tcx>>,
         opt_ty: Option<Ty<'tcx>>,
         mutbl: hir::Mutability,
         unstable_candidates: Option<&mut Vec<(Candidate<'tcx>, Symbol)>>,
@@ -1319,11 +1431,16 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         let region = tcx.lifetimes.re_erased;
 
         let autoref_ty = tcx.mk_ref(region, ty::TypeAndMut { ty: self_ty, mutbl });
-        self.pick_method(autoref_ty, opt_ty, unstable_candidates).map(|r| {
+        let autoref_opt_ty = opt_ty.map(|ty| tcx.mk_ref(region, ty::TypeAndMut { ty, mutbl }));
+        self.pick_method(autoref_ty, autoref_opt_ty, unstable_candidates).map(|r| {
             r.map(|mut pick| {
                 pick.autoderefs = step.autoderefs;
+                pick.other_autoderefs = opt_step.map(|x| x.autoderefs);
                 pick.autoref_or_ptr_adjustment =
                     Some(AutorefOrPtrAdjustment::Autoref { mutbl, unsize: step.unsize });
+                pick.other_autoref_or_ptr_adjustment = opt_step.map(|opt_step| {
+                    AutorefOrPtrAdjustment::Autoref { mutbl, unsize: opt_step.unsize }
+                });
                 pick
             })
         })
@@ -1345,6 +1462,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         if step.unsize {
             return None;
         }
+        //FIXME BPE to do
 
         let ty = match self_ty.kind() {
             ty::RawPtr(ty::TypeAndMut { ty, mutbl: hir::Mutability::Mut }) => ty,

@@ -371,8 +371,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
         debug!("_x2_start");
 
-        let result = self
-            .lookup_method(
+        let use_opt = false;
+        let result = if use_opt {
+            self.lookup_method(
                 self_ty,
                 opt_input_type,
                 &hir::PathSegment::from_ident(m_name),
@@ -383,7 +384,20 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 None,
                 Some(trait_def_id),
             )
-            .ok()?;
+        } else {
+            self.lookup_method(
+                self_ty,
+                None,
+                &hir::PathSegment::from_ident(m_name),
+                span,
+                call_expr,
+                self_expr,
+                None,
+                None,
+                None,
+            )
+        }
+        .ok()?;
 
         debug!("_x2_end {:?}", result);
 

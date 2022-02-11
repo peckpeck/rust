@@ -415,7 +415,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     probe_cx.assemble_extension_candidates_for_trait(
                         &smallvec![],
                         trait_def_id,
-                        false,
+                        true,
                     )
                 }
             };
@@ -1160,6 +1160,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
 
     fn pick(mut self) -> PickResult<'tcx> {
         assert!(self.method_name.is_some());
+        debug!("picked_once");
 
         if let Some(r) = self.pick_core() {
             return r;
@@ -1241,13 +1242,15 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             None => self.pick_all_method(None),
         }
     }
-
+/*
     fn pick_all_method(
         &mut self,
         mut unstable_candidates: Option<&mut Vec<(Candidate<'tcx>, Symbol)>>,
     ) -> Option<PickResult<'tcx>> {
         let steps = self.steps.clone();
         let opt_steps = self.opt_steps.clone();
+        debug!("steps_x2 {:?}", steps);
+        debug!("opt_steps_x2 {:?}", opt_steps);
         for step in steps.iter().filter(|step| {
             debug!("pick_all_method: step={:?}", step);
             // skip types that are from a type error or that would require dereferencing
@@ -1259,6 +1262,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                 None => {
                     let i: Box<dyn Iterator<Item = Option<&CandidateStep<'tcx>>>> =
                         Box::new([None].into_iter());
+                    debug!("None branch_x2");
                     i
                 }
                 Some(ref v) => {
@@ -1274,6 +1278,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     // a raw pointer
                     !step.self_ty.references_error() && !step.from_unsafe_deref
                 } else {
+                    debug!("Kept_x2");
                     true
                 }
             })
@@ -1284,6 +1289,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     "first probe_instantiate_query_response_x2 {:?} for {:?} and {:?}",
                     self.span, &self.orig_steps_var_values, &step.self_ty
                 );
+                debug!("opt step = {:?}", opt_step);
                 let InferOk { value: self_ty, obligations: _ } = self
                     .fcx
                     .probe_instantiate_query_response(
@@ -1318,8 +1324,8 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                 self.pick_by_value_method(
                     step,
                     self_ty,
-                    None,
-                    None,
+                    opt_step,
+                    opt_ty,
                     unstable_candidates.as_deref_mut(),
                 )
                 .or_else(|| {
@@ -1359,6 +1365,99 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             }
         }
         None
+        }*/
+
+    fn pick_all_method(
+        &mut self,
+        mut unstable_candidates: Option<&mut Vec<(Candidate<'tcx>, Symbol)>>,
+    ) -> Option<PickResult<'tcx>> {
+        debug!("steps_x2 {:?}", self.steps);
+        debug!("opt_steps_x2 {:?}", self.opt_steps);
+        if self.opt_steps.is_none() {
+            return self.pick_all_method_with_opt(unstable_candidates.as_deref_mut(), None, None);
+        }
+        assert!(self.opt_orig_steps_var_values.is_some());
+        let opt_steps = self.opt_steps.as_ref().unwrap().clone();
+        opt_steps
+            .iter()
+            .filter(|opt_step| {
+                debug!("pick_all_method: opt_step={:?}", opt_step);
+                // skip types that are from a type error or that would require dereferencing
+                // a raw pointer
+                !opt_step.self_ty.references_error() && !opt_step.from_unsafe_deref
+            })
+            .flat_map(|opt_step| {
+                let InferOk { value: opt_ty, obligations: _ } = self
+                    .fcx
+                    .probe_instantiate_query_response(
+                        self.span,
+                        &self.opt_orig_steps_var_values.as_ref().unwrap(),
+                        &opt_step.self_ty,
+                    )
+                    .unwrap_or_else(|_| {
+                        span_bug!(self.span, "{:?} was applicable but now isn't?", opt_step.self_ty)
+                    });
+                self.pick_all_method_with_opt(unstable_candidates.as_deref_mut(), Some(opt_step), Some(opt_ty))
+            })
+            .next()
+    }
+
+    fn pick_all_method_with_opt(
+        &mut self,
+        mut unstable_candidates: Option<&mut Vec<(Candidate<'tcx>, Symbol)>>,
+        opt_step: Option<&CandidateStep<'tcx>>,
+        opt_ty: Option<Ty<'tcx>>,
+    ) -> Option<PickResult<'tcx>> {
+        let steps = self.steps.clone();
+        steps
+            .iter()
+            .filter(|step| {
+                debug!("pick_all_method: step={:?}", step);
+                // skip types that are from a type error or that would require dereferencing
+                // a raw pointer
+                !step.self_ty.references_error() && !step.from_unsafe_deref
+            })
+            .flat_map(|step| {
+                debug!("step_x2 {:?}", step);
+                debug!("opt_step_x2 {:?}, opt_ty {:?}", opt_step, opt_ty);
+                debug!("{:?}",self.opt_orig_steps_var_values);
+                let InferOk { value: self_ty, obligations: _ } = self
+                    .fcx
+                    .probe_instantiate_query_response(
+                        self.span,
+                        &self.orig_steps_var_values,
+                        &step.self_ty,
+                    )
+                    .unwrap_or_else(|_| {
+                        span_bug!(self.span, "{:?} was applicable but now isn't?", step.self_ty)
+                    });
+                self.pick_by_value_method(
+                    step,
+                    self_ty,
+                    opt_step,
+                    opt_ty,
+                    unstable_candidates.as_deref_mut(),
+                )
+                    .or_else(|| {
+                        self.pick_autorefd_method(
+                            step,
+                            self_ty,
+                            opt_step,
+                            opt_ty,
+                            unstable_candidates.as_deref_mut(),
+                        )
+                            .or_else(|| {
+                                self.pick_const_ptr_method(
+                                    step,
+                                    self_ty,
+                                    opt_step,
+                                    opt_ty,
+                                    unstable_candidates.as_deref_mut(),
+                                )
+                            })
+                    })
+            })
+            .next()
     }
 
     /// For each type `T` in the step list, this attempts to find a method where
@@ -1375,6 +1474,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         opt_ty: Option<Ty<'tcx>>,
         unstable_candidates: Option<&mut Vec<(Candidate<'tcx>, Symbol)>>,
     ) -> Option<PickResult<'tcx>> {
+        debug!("pick_by_value_method");
         if step.unsize {
             return None;
         }
@@ -1383,8 +1483,10 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                 return None;
             }
         }
+        debug!("pick_by_value_method1");
 
         self.pick_method(self_ty, opt_ty, unstable_candidates).map(|r| {
+            debug!("found_x2");
             r.map(|mut pick| {
                 pick.autoderefs = step.autoderefs;
                 pick.other_autoderefs = opt_step.map(|x| x.autoderefs);
@@ -1422,24 +1524,74 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         self_ty: Ty<'tcx>,
         opt_step: Option<&CandidateStep<'tcx>>,
         opt_ty: Option<Ty<'tcx>>,
-        mutbl: hir::Mutability,
+        mut unstable_candidates: Option<&mut Vec<(Candidate<'tcx>, Symbol)>>,
+    ) -> Option<PickResult<'tcx>> {
+        debug!("pick_autorefd_method");
+
+
+
+        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, true, false, false, false, unstable_candidates.as_deref_mut()).or_else(||
+        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, false, false, true, false, unstable_candidates.as_deref_mut()).or_else(||
+        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, true, false, true, false, unstable_candidates.as_deref_mut()).or_else(||
+
+        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, true, true, false, false, unstable_candidates.as_deref_mut()).or_else(||
+        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, false, false, true, true, unstable_candidates.as_deref_mut()).or_else(||
+
+        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, true, true, true, false, unstable_candidates.as_deref_mut()).or_else(||
+        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, true, false, true, true, unstable_candidates.as_deref_mut()).or_else(||
+
+        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, true, true, true, true, unstable_candidates.as_deref_mut())
+        )))))))
+    }
+
+    fn pick_autorefd_method_substep(
+        &mut self,
+        step: &CandidateStep<'tcx>,
+        self_ty: Ty<'tcx>,
+        opt_step: Option<&CandidateStep<'tcx>>,
+        opt_ty: Option<Ty<'tcx>>,
+        self_ref: bool,
+        self_mut: bool,
+        opt_ref: bool,
+        opt_mut: bool,
         unstable_candidates: Option<&mut Vec<(Candidate<'tcx>, Symbol)>>,
     ) -> Option<PickResult<'tcx>> {
+        let mutbl = if self_mut {
+            hir::Mutability::Mut
+        } else {
+            hir::Mutability::Not
+        };
+        let opt_mutbl = if opt_mut {
+            hir::Mutability::Mut
+        } else {
+            hir::Mutability::Not
+        }
+            ;
         let tcx = self.tcx;
 
         // In general, during probing we erase regions.
         let region = tcx.lifetimes.re_erased;
 
-        let autoref_ty = tcx.mk_ref(region, ty::TypeAndMut { ty: self_ty, mutbl });
-        let autoref_opt_ty = opt_ty.map(|ty| tcx.mk_ref(region, ty::TypeAndMut { ty, mutbl }));
+        let autoref_ty = if self_ref{
+            tcx.mk_ref(region, ty::TypeAndMut { ty: self_ty, mutbl })
+        } else {
+            self_ty
+        };
+        let autoref_opt_ty = if opt_ref {
+            opt_ty.map(|ty| tcx.mk_ref(region, ty::TypeAndMut { ty, mutbl: opt_mutbl }))
+        } else {
+            opt_ty
+        };
+
         self.pick_method(autoref_ty, autoref_opt_ty, unstable_candidates).map(|r| {
+            debug!("found_x2");
             r.map(|mut pick| {
                 pick.autoderefs = step.autoderefs;
                 pick.other_autoderefs = opt_step.map(|x| x.autoderefs);
                 pick.autoref_or_ptr_adjustment =
                     Some(AutorefOrPtrAdjustment::Autoref { mutbl, unsize: step.unsize });
                 pick.other_autoref_or_ptr_adjustment = opt_step.map(|opt_step| {
-                    AutorefOrPtrAdjustment::Autoref { mutbl, unsize: opt_step.unsize }
+                    AutorefOrPtrAdjustment::Autoref { mutbl: opt_mutbl, unsize: opt_step.unsize }
                 });
                 pick
             })
@@ -1543,7 +1695,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         }
 
         debug!("pick_method_x2(self_ty={})", self.ty_to_string(self_ty));
-        debug!("pick_method(other_ty={:?})", opt_ty);
+        debug!("pick_method_x2(other_ty={:?})", opt_ty);
 
         let mut possibly_unsatisfied_predicates = Vec::new();
 

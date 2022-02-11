@@ -371,7 +371,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
         debug!("_x2_start");
 
-        let use_opt = false;
+        // working base : use_opt=true, pick_with_opt=false
+        let use_opt = true;
         let result = if use_opt {
             self.lookup_method(
                 self_ty,
@@ -394,7 +395,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 self_expr,
                 None,
                 None,
-                None,
+                Some(trait_def_id),
             )
         }
         .ok()?;

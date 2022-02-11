@@ -213,10 +213,15 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             lhs_expr,
             Some(rhs_expr),
         ); // what about unop
+        debug!("     {:?}", result);
+        debug!("rhs_ty_var {:?} rhs_ty {:?}", rhs_ty_var, rhs_ty);
 
         // see `NB` above
-        let rhs_ty = self.check_expr_coercable_to_type(rhs_expr, rhs_ty_var, Some(lhs_expr));
-        let rhs_ty = self.resolve_vars_with_obligations(rhs_ty);
+        //let rhs_ty = self.check_expr_coercable_to_type(rhs_expr, rhs_ty, Some(lhs_expr));
+        debug!("rhs_ty_var {:?} rhs_ty {:?}", rhs_ty_var, rhs_ty);
+        //let rhs_ty = self.resolve_vars_with_obligations(rhs_ty);
+        debug!("rhs_ty_var {:?} rhs_ty {:?}", rhs_ty_var, rhs_ty);
+        debug!("Lookup done_x2bis {:?}", result);
 
         let return_ty = match result {
             Ok(method) => {
@@ -502,6 +507,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 self.tcx.ty_error()
             }
         };
+        debug!("returning_x2 {:?}", return_ty);
 
         (lhs_ty, rhs_ty, return_ty)
     }
@@ -843,9 +849,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 _other_expr,
             )
         });
+        debug!("found method_x2 {:?}", method);
 
         match (method, trait_did) {
             (Some(ok), _) => {
+                debug!("indeed");
                 let method = self.register_infer_ok_obligations(ok);
                 self.select_obligations_where_possible(false, |_| {});
                 Ok(method)

@@ -22,6 +22,7 @@ struct ConfirmContext<'a, 'tcx> {
     fcx: &'a FnCtxt<'a, 'tcx>,
     span: Span,
     self_expr: &'tcx hir::Expr<'tcx>,
+    other_expr: Option<&'tcx hir::Expr<'tcx>>,
     call_expr: &'tcx hir::Expr<'tcx>,
 }
 
@@ -53,15 +54,17 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             unadjusted_self_ty, pick, segment.args,
         );
 
-        let mut confirm_cx = ConfirmContext::new(self, span, self_expr, call_expr);
+        let mut confirm_cx = ConfirmContext::new(self, span, self_expr, None, call_expr);
         confirm_cx.confirm(unadjusted_self_ty, pick, segment)
     }
     pub fn confirm_method_x2(
         &self,
         span: Span,
         self_expr: &'tcx hir::Expr<'tcx>,
+        other_expr: Option<&'tcx hir::Expr<'tcx>>,
         call_expr: &'tcx hir::Expr<'tcx>,
         unadjusted_self_ty: Ty<'tcx>,
+        unadjusted_other_ty: Option<Ty<'tcx>>,
         pick: probe::Pick<'tcx>,
         segment: &hir::PathSegment<'_>,
     ) -> ConfirmResult<'tcx> {
@@ -69,8 +72,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             "confirm(unadjusted_self_ty={:?}, pick={:?}, generic_args={:?})",
             unadjusted_self_ty, pick, segment.args,
         );
-        let mut confirm_cx = ConfirmContext::new(self, span, self_expr, call_expr);
-        confirm_cx.confirm_x2(unadjusted_self_ty, pick, segment)
+
+        let mut confirm_cx = ConfirmContext::new(self, span, self_expr, other_expr, call_expr);
+        confirm_cx.confirm_x2(unadjusted_self_ty, unadjusted_other_ty, pick, segment)
     }
 }
 
@@ -79,9 +83,10 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         fcx: &'a FnCtxt<'a, 'tcx>,
         span: Span,
         self_expr: &'tcx hir::Expr<'tcx>,
+        other_expr: Option<&'tcx hir::Expr<'tcx>>,
         call_expr: &'tcx hir::Expr<'tcx>,
     ) -> ConfirmContext<'a, 'tcx> {
-        ConfirmContext { fcx, span, self_expr, call_expr }
+        ConfirmContext { fcx, span, self_expr, other_expr, call_expr }
     }
 
     fn confirm(
@@ -156,20 +161,24 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
     fn confirm_x2(
         &mut self,
         unadjusted_self_ty: Ty<'tcx>,
+        unadjusted_other_ty: Option<Ty<'tcx>>,
         pick: probe::Pick<'tcx>,
-        _segment: &hir::PathSegment<'_>,
+        segment: &hir::PathSegment<'_>,
     ) -> ConfirmResult<'tcx> {
         // Adjust the self expression the user provided and obtain the adjusted type.
+        debug!("Before adjust_x2: {:?}", unadjusted_self_ty);
         let self_ty = self.adjust_self_ty(unadjusted_self_ty, &pick);
 
         // Create substitutions for the method's type parameters.
-        let all_substs = self.fresh_receiver_substs(self_ty, &pick);
-        //let all_substs = self.instantiate_method_substs(&pick, segment, rcvr_substs);
+        // type is only used for ObjectPick, so other_type has no place here
+        let rcvr_substs = self.fresh_receiver_substs(self_ty, &pick);
+        let all_substs = self.instantiate_method_substs(&pick, segment, rcvr_substs);
 
-        debug!("all_substs={:?}", all_substs);
+        debug!("all_substs_x2={:?}", all_substs);
 
         // Create the final signature for the method, replacing late-bound regions.
         let (method_sig, method_predicates) = self.instantiate_method_sig(&pick, all_substs);
+        debug!("method0_x2={:?}, predicates={:?}", method_sig, method_predicates);
 
         // Unify the (adjusted) self type with what the method expects.
         //
@@ -178,15 +187,28 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         // could alter our Self-type, except for normalizing the receiver from the
         // signature (which is also done during probing).
         let method_sig_rcvr = self.normalize_associated_types_in(self.span, method_sig.inputs()[0]);
+
         debug!(
-            "confirm_x2: self_ty={:?} method_sig_rcvr={:?} method_sig={:?} method_predicates={:?}",
+            "confirm: self_ty={:?} method_sig_rcvr={:?} method_sig={:?} method_predicates={:?}",
             self_ty, method_sig_rcvr, method_sig, method_predicates
         );
         self.unify_receivers(self_ty, method_sig_rcvr, &pick, all_substs);
+        if let Some(unadjusted_other_ty) = unadjusted_other_ty {
+            // Same for first argument type if any
+            let other_ty = self.adjust_other_ty(unadjusted_other_ty, &pick);
+            debug!("After adjust_x2: {:?} other={:?}", self_ty, other_ty);
+            let method_sig_arg1 =
+                self.normalize_associated_types_in(self.span, method_sig.inputs()[1]);
+            debug!(
+                "confirm: other_ty={:?} method_sig_arg1={:?} method_sig={:?} method_predicates={:?}",
+                other_ty, method_sig_arg1, method_sig, method_predicates
+            );
+            self.unify_other(other_ty, method_sig_arg1, &pick, all_substs);
+        }
 
-        // BPE Problem here, but why ?
         let (method_sig, method_predicates) =
             self.normalize_associated_types_in(self.span, (method_sig, method_predicates));
+        debug!("method1_x2={:?}, predicates={:?}", method_sig, method_predicates);
         let method_sig = ty::Binder::dummy(method_sig);
 
         // Make sure nobody calls `drop()` explicitly.
@@ -200,14 +222,12 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         // In that case, we'll error anyway, but we'll also re-run the search with all traits
         // in scope, and if we find another method which can be used, we'll output an
         // appropriate hint suggesting to import the trait.
-        let _illegal_sized_bound = self.predicates_require_illegal_sized_bound(&method_predicates);
+        let illegal_sized_bound = self.predicates_require_illegal_sized_bound(&method_predicates);
 
         // Add any trait/regions obligations specified on the method's type parameters.
         // We won't add these if we encountered an illegal sized bound, so that we can use
         // a custom error in that case.
-        // BPE Problem here, but why ?
-
-        if _illegal_sized_bound.is_none() {
+        if illegal_sized_bound.is_none() {
             self.add_obligations(
                 self.tcx.mk_fn_ptr(method_sig),
                 all_substs,
@@ -222,7 +242,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
             substs: all_substs,
             sig: method_sig.skip_binder(),
         };
-        ConfirmResult { callee, illegal_sized_bound: None }
+        ConfirmResult { callee, illegal_sized_bound }
     }
 
     ///////////////////////////////////////////////////////////////////////////
@@ -249,15 +269,20 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         assert_eq!(n, pick.autoderefs);
 
         let mut adjustments = self.adjust_steps(&autoderef);
+        debug!("Structurally before_x2 {:?} adj={:?}", ty, adjustments);
         let mut target = self.structurally_resolved_type(autoderef.span(), ty);
+        debug!("Structurally after_x2 {:?}", target);
 
         match pick.autoref_or_ptr_adjustment {
             Some(probe::AutorefOrPtrAdjustment::Autoref { mutbl, unsize }) => {
+                debug!("autoref adjustment_x2 {:?} {:?}", mutbl, unsize);
                 let region = self.next_region_var(infer::Autoref(self.span));
                 // Type we're wrapping in a reference, used later for unsizing
                 let base_ty = target;
 
+                debug!("target0_x2 {:?}", target);
                 target = self.tcx.mk_ref(region, ty::TypeAndMut { mutbl, ty: target });
+                debug!("target1_x2 {:?}", target);
                 let mutbl = match mutbl {
                     hir::Mutability::Not => AutoBorrowMutability::Not,
                     hir::Mutability::Mut => AutoBorrowMutability::Mut {
@@ -270,6 +295,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
                     kind: Adjust::Borrow(AutoBorrow::Ref(region, mutbl)),
                     target,
                 });
+                debug!("Adjustments_x2 {:?}", adjustments);
 
                 if unsize {
                     let unsized_ty = if let ty::Array(elem_ty, _) = base_ty.kind() {
@@ -288,6 +314,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
                 }
             }
             Some(probe::AutorefOrPtrAdjustment::ToConstPtr) => {
+                debug!("autoref const");
                 target = match target.kind() {
                     ty::RawPtr(ty::TypeAndMut { ty, mutbl }) => {
                         assert_eq!(*mutbl, hir::Mutability::Mut);
@@ -308,6 +335,99 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
 
         // Write out the final adjustments.
         self.apply_adjustments(self.self_expr, adjustments);
+
+        target
+    }
+
+    fn adjust_other_ty(
+        &mut self,
+        unadjusted_other_ty: Ty<'tcx>,
+        pick: &probe::Pick<'tcx>,
+    ) -> Ty<'tcx> {
+        // Commit the autoderefs by calling `autoderef` again, but this
+        // time writing the results into the various typeck results.
+        let mut autoderef =
+            self.autoderef_overloaded_span(self.span, unadjusted_other_ty, self.call_expr.span);
+        assert!(pick.other_autoderefs.is_some(), "probe should specify a second type");
+        let other_autoderefs = pick.other_autoderefs.unwrap();
+        let (ty, n) = match autoderef.nth(other_autoderefs) {
+            Some(n) => n,
+            None => {
+                return self.tcx.ty_error_with_message(
+                    rustc_span::DUMMY_SP,
+                    &format!("failed autoderef {}", other_autoderefs),
+                );
+            }
+        };
+        assert_eq!(n, other_autoderefs);
+
+        let mut adjustments = self.adjust_steps(&autoderef);
+        debug!("Structurally before_x2 other {:?} adj={:?}", ty, adjustments);
+        let mut target = self.structurally_resolved_type(autoderef.span(), ty);
+        debug!("Structurally after_x2 other {:?}", target);
+
+        match pick.other_autoref_or_ptr_adjustment {
+            Some(probe::AutorefOrPtrAdjustment::Autoref { mutbl, unsize }) => {
+                debug!("autoref adjustment_x2 {:?} {:?}", mutbl, unsize);
+                let region = self.next_region_var(infer::Autoref(self.span));
+                // Type we're wrapping in a reference, used later for unsizing
+                let base_ty = target;
+
+                debug!("target0_x2 other {:?}", target);
+                target = self.tcx.mk_ref(region, ty::TypeAndMut { mutbl, ty: target });
+                debug!("target1_x2 other {:?}", target);
+                let mutbl = match mutbl {
+                    hir::Mutability::Not => AutoBorrowMutability::Not,
+                    hir::Mutability::Mut => AutoBorrowMutability::Mut {
+                        // Method call receivers are the primary use case
+                        // for two-phase borrows.
+                        allow_two_phase_borrow: AllowTwoPhase::Yes,
+                    },
+                };
+                adjustments.push(Adjustment {
+                    kind: Adjust::Borrow(AutoBorrow::Ref(region, mutbl)),
+                    target,
+                });
+                debug!("Adjstments_x2 other {:?}", adjustments);
+
+                if unsize {
+                    let unsized_ty = if let ty::Array(elem_ty, _) = base_ty.kind() {
+                        self.tcx.mk_slice(elem_ty)
+                    } else {
+                        bug!(
+                            "AutorefOrPtrAdjustment's unsize flag should only be set for array ty, found {}",
+                            base_ty
+                        )
+                    };
+                    target = self
+                        .tcx
+                        .mk_ref(region, ty::TypeAndMut { mutbl: mutbl.into(), ty: unsized_ty });
+                    adjustments
+                        .push(Adjustment { kind: Adjust::Pointer(PointerCast::Unsize), target });
+                }
+            }
+            Some(probe::AutorefOrPtrAdjustment::ToConstPtr) => {
+                debug!("autoref const");
+                target = match target.kind() {
+                    ty::RawPtr(ty::TypeAndMut { ty, mutbl }) => {
+                        assert_eq!(*mutbl, hir::Mutability::Mut);
+                        self.tcx.mk_ptr(ty::TypeAndMut { mutbl: hir::Mutability::Not, ty })
+                    }
+                    other => panic!("Cannot adjust receiver type {:?} to const ptr", other),
+                };
+
+                adjustments.push(Adjustment {
+                    kind: Adjust::Pointer(PointerCast::MutToConstPointer),
+                    target,
+                });
+            }
+            None => {}
+        }
+
+        self.register_predicates(autoderef.into_obligations());
+
+        // Write out the final adjustments.
+        self.apply_adjustments(self.other_expr.unwrap(), adjustments); // FIXME BPE oops
 
         target
     }
@@ -528,6 +648,39 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
                     "{} was a subtype of {} but now is not?",
                     self_ty,
                     method_self_ty
+                );
+            }
+        }
+    }
+    fn unify_other(
+        &mut self,
+        other_ty: Ty<'tcx>,
+        method_other_ty: Ty<'tcx>,
+        pick: &probe::Pick<'tcx>,
+        substs: SubstsRef<'tcx>,
+    ) {
+        debug!(
+            "unify_other: self_ty={:?} method_self_ty={:?} span={:?} pick={:?}",
+            other_ty, method_other_ty, self.span, pick
+        );
+        let cause = self.cause(
+            self.span,
+            ObligationCauseCode::UnifyReceiver(Box::new(UnifyReceiverContext {
+                assoc_item: pick.item,
+                param_env: self.param_env,
+                substs,
+            })),
+        );
+        match self.at(&cause, self.param_env).sup(method_other_ty, other_ty) {
+            Ok(InferOk { obligations, value: () }) => {
+                self.register_predicates(obligations);
+            }
+            Err(_) => {
+                span_bug!(
+                    self.span,
+                    "{} was a subtype of {} but now is not?",
+                    other_ty,
+                    method_other_ty
                 );
             }
         }

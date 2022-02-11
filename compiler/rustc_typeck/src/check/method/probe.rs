@@ -1588,11 +1588,15 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             r.map(|mut pick| {
                 pick.autoderefs = step.autoderefs;
                 pick.other_autoderefs = opt_step.map(|x| x.autoderefs);
-                pick.autoref_or_ptr_adjustment =
-                    Some(AutorefOrPtrAdjustment::Autoref { mutbl, unsize: step.unsize });
-                pick.other_autoref_or_ptr_adjustment = opt_step.map(|opt_step| {
-                    AutorefOrPtrAdjustment::Autoref { mutbl: opt_mutbl, unsize: opt_step.unsize }
-                });
+                if self_ref {
+                    pick.autoref_or_ptr_adjustment =
+                        Some(AutorefOrPtrAdjustment::Autoref { mutbl, unsize: step.unsize });
+                }
+                if opt_ref {
+                    pick.other_autoref_or_ptr_adjustment = opt_step.map(|opt_step| {
+                        AutorefOrPtrAdjustment::Autoref { mutbl: opt_mutbl, unsize: opt_step.unsize }
+                    });
+                }
                 pick
             })
         })

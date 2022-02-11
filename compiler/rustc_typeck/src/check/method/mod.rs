@@ -216,7 +216,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         };
 
         let pick = self.lookup_probe(span, segment.ident, self_ty, call_expr, scope, other_ty)?;
-        debug!("pick_x2 = {:?}", pick);
 
         // not needed for op trait lookup since it's more recent than that
         if let Some(args) = args {
@@ -245,11 +244,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 segment,
             ),
         };
-        debug!("result_x2 = {:?}", result);
-        /*let result =
-            self.confirm_method(span, self_expr, call_expr, self_ty, pick.clone(), segment);
-        debug!("result = {:?}", result);
-*/
+
         if let Some(span) = result.illegal_sized_bound {
             let mut needs_mut = false;
             if let ty::Ref(region, t_type, mutability) = self_ty.kind() {
@@ -366,29 +361,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         self_expr: &'tcx hir::Expr<'tcx>,
         other_expr: Option<&'tcx hir::Expr<'tcx>>,
     ) -> Option<InferOk<'tcx, MethodCallee<'tcx>>> {
-        // FIXME BPE
-        // I don't know why but lookup_method doesn't work when autoref is not needed
-        // anyway it makes things faster when there is a trait
-        // and the method must be kept because some use cases remain
-
-        // side effect, it seems to pollute the cache
-        /*let opt_input_types =
-            opt_input_type.as_ref().map(core::slice::from_ref).unwrap_or_default();
-        let output =
-            self.lookup_method_in_trait(span, m_name, trait_def_id, self_ty, Some(opt_input_types));
-        if output.is_some() {
-            return output;
-        }*/
-
-        if !self.tcx.features().operator_autoref {
-            return None;
-        }
-        debug!("_x2_start");
-
-        // working base : use_opt=true, pick_with_opt=false
-        let use_opt = true;
-        let result = if use_opt {
-            self.lookup_method(
+        if self.tcx.features().operator_autoref {
+            // New operator_autoref behaviour: full trait lookup
+            let result = self.lookup_method(
                 self_ty,
                 opt_input_type,
                 &hir::PathSegment::from_ident(m_name),
@@ -399,25 +374,17 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 None,
                 Some(trait_def_id),
             )
+            .ok()?;
+
+            // Obligations are already checked with confirm method from lookup method
+            Some(InferOk { obligations: vec![], value: result })
         } else {
-            self.lookup_method(
-                self_ty,
-                None,
-                &hir::PathSegment::from_ident(m_name),
-                span,
-                call_expr,
-                self_expr,
-                None,
-                None,
-                Some(trait_def_id),
-            )
+            // Original behaviour
+            // FIXME it may be faster to also call this under operator_autoref before generic lookup
+            let opt_input_types =
+                opt_input_type.as_ref().map(core::slice::from_ref).unwrap_or_default();
+            self.lookup_method_in_trait(span, m_name, trait_def_id, self_ty, Some(opt_input_types))
         }
-        .ok()?;
-
-        debug!("_x2_end {:?}", result);
-
-        // I think obligations are already checked with confirm method from lookup method
-        Some(InferOk { obligations: vec![], value: result })
     }
 
     /// `lookup_method_in_trait` is used for overloaded operators.

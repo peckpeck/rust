@@ -201,27 +201,32 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             span: rhs_expr.span,
         });
 
-        // FIXME BPE (test in new.rs) see below
-        let rhs_ty = self.check_expr_coercable_to_type(rhs_expr, rhs_ty_var, Some(lhs_expr));
-        let rhs_ty = self.resolve_vars_with_obligations(rhs_ty);
+        let opt_rhs_ty = if self.tcx.features().operator_autoref {
+            // the operator autoref lookup version needs a type here
+            // whereas the original lookup behaviour is to decide type later
+            let rhs_ty = self.check_expr_coercable_to_type(rhs_expr, rhs_ty_var, Some(lhs_expr));
+            Some(self.resolve_vars_with_obligations(rhs_ty))
+        } else {
+            None
+        };
 
         let result = self.lookup_op_method(
             lhs_ty,
-            Some(rhs_ty),
+            opt_rhs_ty,
             Op::Binary(op, is_assign),
             expr,
             lhs_expr,
             Some(rhs_expr),
         ); // what about unop
-        debug!("     {:?}", result);
-        debug!("rhs_ty_var {:?} rhs_ty {:?}", rhs_ty_var, rhs_ty);
 
-        // see `NB` above
-        //let rhs_ty = self.check_expr_coercable_to_type(rhs_expr, rhs_ty, Some(lhs_expr));
-        debug!("rhs_ty_var {:?} rhs_ty {:?}", rhs_ty_var, rhs_ty);
-        //let rhs_ty = self.resolve_vars_with_obligations(rhs_ty);
-        debug!("rhs_ty_var {:?} rhs_ty {:?}", rhs_ty_var, rhs_ty);
-        debug!("Lookup done_x2bis {:?}", result);
+        let rhs_ty = match opt_rhs_ty {
+            Some(ty) => ty,
+            None => {
+                // see `NB` above for original behaviour
+                let rhs_ty = self.check_expr_coercable_to_type(rhs_expr, rhs_ty_var, Some(lhs_expr));
+                self.resolve_vars_with_obligations(rhs_ty)
+            }
+        };
 
         let return_ty = match result {
             Ok(method) => {
@@ -750,9 +755,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         lhs_ty: Ty<'tcx>,
         other_ty: Option<Ty<'tcx>>,
         op: Op,
-        _call_expr: &'tcx hir::Expr<'tcx>,
-        _self_expr: &'tcx hir::Expr<'tcx>,
-        _other_expr: Option<&'tcx hir::Expr<'tcx>>,
+        call_expr: &'tcx hir::Expr<'tcx>,
+        self_expr: &'tcx hir::Expr<'tcx>,
+        other_expr: Option<&'tcx hir::Expr<'tcx>>,
     ) -> Result<MethodCallee<'tcx>, Vec<FulfillmentError<'tcx>>> {
         let lang = self.tcx.lang_items();
 
@@ -837,23 +842,20 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         let opname = Ident::with_dummy_span(opname);
         let method = trait_did.and_then(|trait_did| {
-            //self.lookup_method_in_trait(span, opname, trait_did, lhs_ty, Some(other_tys))
             self.lookup_method_in_trait_with_autoref(
                 span,
                 opname,
                 trait_did,
                 lhs_ty,
                 other_ty,
-                _call_expr,
-                _self_expr,
-                _other_expr,
+                call_expr,
+                self_expr,
+                other_expr,
             )
         });
-        debug!("found method_x2 {:?}", method);
 
         match (method, trait_did) {
             (Some(ok), _) => {
-                debug!("indeed");
                 let method = self.register_infer_ok_obligations(ok);
                 self.select_obligations_where_possible(false, |_| {});
                 Ok(method)

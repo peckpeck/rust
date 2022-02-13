@@ -201,32 +201,21 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             span: rhs_expr.span,
         });
 
-        let opt_rhs_ty = if self.tcx.features().operator_autoref {
-            // the operator autoref lookup version needs a type here
-            // whereas the original lookup behaviour is to decide type later
-            let rhs_ty = self.check_expr_coercable_to_type(rhs_expr, rhs_ty_var, Some(lhs_expr));
-            Some(self.resolve_vars_with_obligations(rhs_ty))
-        } else {
-            None
-        };
+        let mut opt_ty = Some(rhs_ty_var);
 
+        // rhs_ty is resolved during the lookup process
         let result = self.lookup_op_method(
             lhs_ty,
-            opt_rhs_ty,
+            &mut opt_ty,
             Op::Binary(op, is_assign),
             expr,
             lhs_expr,
             Some(rhs_expr),
-        ); // what about unop
+            true,
+        );
 
-        let rhs_ty = match opt_rhs_ty {
-            Some(ty) => ty,
-            None => {
-                // see `NB` above for original behaviour
-                let rhs_ty = self.check_expr_coercable_to_type(rhs_expr, rhs_ty_var, Some(lhs_expr));
-                self.resolve_vars_with_obligations(rhs_ty)
-            }
-        };
+        assert!(opt_ty.is_some());
+        let rhs_ty = opt_ty.unwrap();
 
         let return_ty = match result {
             Ok(method) => {
@@ -428,11 +417,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         && self
                             .lookup_op_method(
                                 rty,
-                                Some(rhs_ty),
+                                &mut Some(rhs_ty),
                                 Op::Binary(op, is_assign),
                                 expr,
                                 lhs_expr,
                                 Some(rhs_expr),
+                                false,
                             )
                             .is_ok()
                     {
@@ -477,11 +467,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             let needs_bound = self
                                 .lookup_op_method(
                                     eraser.fold_ty(lhs_ty),
-                                    Some(eraser.fold_ty(rhs_ty)),
+                                    &mut Some(eraser.fold_ty(rhs_ty)),
                                     Op::Binary(op, is_assign),
                                     expr,
                                     lhs_expr,
                                     Some(rhs_expr),
+                                    false,
                                 )
                                 .is_ok();
                             if needs_bound {
@@ -555,11 +546,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             if self
                 .lookup_op_method(
                     fn_sig.output(),
-                    Some(other_ty),
+                    &mut Some(other_ty),
                     Op::Binary(op, is_assign),
                     expr,
                     lhs_expr,
                     None,
+                    false
                 )
                 .is_ok()
             {
@@ -679,7 +671,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         lhs_expr: &'tcx hir::Expr<'tcx>,
     ) -> Ty<'tcx> {
         assert!(op.is_by_value());
-        match self.lookup_op_method(operand_ty, None, Op::Unary(op, ex.span), ex, lhs_expr, None) {
+        match self.lookup_op_method(operand_ty, &mut None, Op::Unary(op, ex.span), ex, lhs_expr, None, false) {
             Ok(method) => {
                 self.write_method_call(ex.hir_id, method);
                 method.sig.output()
@@ -753,11 +745,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     fn lookup_op_method(
         &self,
         lhs_ty: Ty<'tcx>,
-        other_ty: Option<Ty<'tcx>>,
+        other_ty: &mut Option<Ty<'tcx>>,
         op: Op,
         call_expr: &'tcx hir::Expr<'tcx>,
         self_expr: &'tcx hir::Expr<'tcx>,
         other_expr: Option<&'tcx hir::Expr<'tcx>>,
+        resolve_other_ty: bool,
     ) -> Result<MethodCallee<'tcx>, Vec<FulfillmentError<'tcx>>> {
         let lang = self.tcx.lang_items();
 
@@ -851,6 +844,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 call_expr,
                 self_expr,
                 other_expr,
+                resolve_other_ty,
             )
         });
 

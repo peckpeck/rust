@@ -356,16 +356,33 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         m_name: Ident,
         trait_def_id: DefId,
         self_ty: Ty<'tcx>,
-        opt_input_type: Option<Ty<'tcx>>,
+        opt_input_type: &mut Option<Ty<'tcx>>,
         call_expr: &'tcx hir::Expr<'tcx>,
         self_expr: &'tcx hir::Expr<'tcx>,
         other_expr: Option<&'tcx hir::Expr<'tcx>>,
+        resolve_other_ty: bool,
     ) -> Option<InferOk<'tcx, MethodCallee<'tcx>>> {
+        // Keep original behaviour as a shortcut as it's way faster
+        let opt_input_types =
+            opt_input_type.as_ref().map(core::slice::from_ref).unwrap_or_default();
+        let result = self.lookup_method_in_trait(span, m_name, trait_def_id, self_ty, Some(opt_input_types));
+        // Late resolve of rhs for binops (see NB in check_overloaded_binop)
+        // But used as early resolve for generic lookup below
+        if resolve_other_ty {
+            assert!(other_expr.is_some());
+            assert!(opt_input_type.is_some());
+            let rhs_ty = self.check_expr_coercable_to_type(other_expr.unwrap(), opt_input_type.unwrap(), Some(self_expr));
+            *opt_input_type = Some(self.resolve_vars_with_obligations(rhs_ty));
+        }
+        if result.is_some() {
+            return result;
+        }
+
+        // New operator_autoref behaviour: full trait lookup
         if self.tcx.features().operator_autoref {
-            // New operator_autoref behaviour: full trait lookup
             let result = self.lookup_method(
                 self_ty,
-                opt_input_type,
+                *opt_input_type,
                 &hir::PathSegment::from_ident(m_name),
                 span,
                 call_expr,
@@ -379,11 +396,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // Obligations are already checked with confirm method from lookup method
             Some(InferOk { obligations: vec![], value: result })
         } else {
-            // Original behaviour
-            // FIXME it may be faster to also call this under operator_autoref before generic lookup
-            let opt_input_types =
-                opt_input_type.as_ref().map(core::slice::from_ref).unwrap_or_default();
-            self.lookup_method_in_trait(span, m_name, trait_def_id, self_ty, Some(opt_input_types))
+            None
         }
     }
 

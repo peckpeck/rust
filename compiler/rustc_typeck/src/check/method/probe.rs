@@ -363,7 +363,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let mut orig_values = OriginalQueryValues::default();
         let steps =
             self.create_steps(span, mode, is_suggestion, self_ty, scope_expr_id, &mut orig_values)?;
-        debug!("ProbeContext_x2: steps for self_ty={:?} are {:?}", self_ty, steps);
+        debug!("ProbeContext: steps for self_ty={:?} are {:?}", self_ty, steps);
         let (opt_steps, opt_orig_values) = match opt_input_type {
             None => (None, None),
             Some(ty) => {
@@ -376,7 +376,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     scope_expr_id,
                     &mut orig_values,
                 )?;
-                debug!("ProbeContext_x2: opt_steps for opt_ty={:?} are {:?}", ty, steps);
+                debug!("ProbeContext: opt_steps for opt_ty={:?} are {:?}", ty, steps);
                 (Some(steps), Some(orig_values))
             }
         };
@@ -1468,7 +1468,6 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         opt_ty: Option<Ty<'tcx>>,
         unstable_candidates: Option<&mut Vec<(Candidate<'tcx>, Symbol)>>,
     ) -> Option<PickResult<'tcx>> {
-        debug!("by_const_x2");
         // Don't convert an unsized reference to ptr
         if step.unsize {
             return None;
@@ -1601,7 +1600,6 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         let mut applicable_candidates: Vec<_> = probes
             .clone()
             .map(|probe| {
-                debug!("consider_candidates_x2 with {:?} {:?} on {:?}", self_ty, opt_ty, probe);
                 (
                     probe,
                     self.consider_probe(self_ty, opt_ty, probe, possibly_unsatisfied_predicates),
@@ -1709,13 +1707,9 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         &self,
         trait_ref: ty::TraitRef<'tcx>,
     ) -> traits::SelectionResult<'tcx, traits::Selection<'tcx>> {
-        debug!("select_trait_candidate_x2");
         let cause = traits::ObligationCause::misc(self.span, self.body_id);
-        debug!("select_trait candidate_x2 {:?}", cause);
         let predicate = ty::Binder::dummy(trait_ref).to_poly_trait_predicate();
-        debug!("select_trait candidate_x2 {:?}", predicate);
         let obligation = traits::Obligation::new(cause, self.param_env, predicate);
-        debug!("select_trait candidate_x2 {:?}", obligation);
         traits::SelectionContext::new(self).select(&obligation)
     }
 
@@ -1794,7 +1788,6 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             let mut result = ProbeResult::Match;
             let mut xform_ret_ty = probe.xform_ret_ty;
             debug!(?xform_ret_ty);
-            debug!("probing0_x2");
 
             let selcx = &mut traits::SelectionContext::new(self);
             let cause = traits::ObligationCause::misc(self.span, self.body_id);
@@ -1850,7 +1843,6 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                 }
 
                 TraitCandidate(trait_ref) => {
-                    debug!("probing trait0_x2");
                     if let Some(method_name) = self.method_name {
                         // Some trait methods are excluded for arrays before 2021.
                         // (`array.into_iter()` wants a slice iterator for compatibility.)
@@ -1861,23 +1853,19 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                             }
                         }
                     }
-                    debug!("probing trait1_x2");
                     let predicate =
                         ty::Binder::dummy(trait_ref).without_const().to_predicate(self.tcx);
                     let obligation = traits::Obligation::new(cause, self.param_env, predicate);
                     if !self.predicate_may_hold(&obligation) {
                         result = ProbeResult::NoMatch;
-                        debug!("probing trait2_x2");
                         if self.probe(|_| {
                             match self.select_trait_candidate(trait_ref) {
-                                Err(e) => {
-                                    debug!("Candidate_x2 is Err {:?}", e);
+                                Err(_) => {
                                     return true;
                                 }
                                 Ok(Some(impl_source))
                                     if !impl_source.borrow_nested_obligations().is_empty() =>
                                 {
-                                    debug!("probing trait3_x2 {:?}", impl_source);
                                     for obligation in impl_source.borrow_nested_obligations() {
                                         // Determine exactly which obligation wasn't met, so
                                         // that we can give more context in the error.
@@ -1904,15 +1892,12 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                                 _ => {
                                     // Some nested subobligation of this predicate
                                     // failed.
-                                    debug!("probing trait4_x2 {:?}", predicate);
                                     let predicate = self.resolve_vars_if_possible(predicate);
                                     possibly_unsatisfied_predicates.push((predicate, None, None));
                                 }
                             }
-                            debug!("probing trait5_x2 {:?}", possibly_unsatisfied_predicates);
                             false
                         }) {
-                            debug!("probing trait6_x2");
                             // This candidate's primary obligation doesn't even
                             // select - don't bother registering anything in
                             // `potentially_unsatisfied_predicates`.
@@ -1921,7 +1906,6 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     }
                 }
             }
-            debug!("probing trait done_x2 {:?}", result);
 
             // Evaluate those obligations to see if they might possibly hold.
             for o in sub_obligations {
@@ -1931,7 +1915,6 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     possibly_unsatisfied_predicates.push((o.predicate, None, Some(o.cause)));
                 }
             }
-            debug!("probing obligation done_x2 {:?}", result);
 
             if let ProbeResult::Match = result {
                 if let (Some(return_ty), Some(xform_ret_ty)) = (self.return_type, xform_ret_ty) {

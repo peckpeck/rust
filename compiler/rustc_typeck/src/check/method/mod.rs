@@ -231,9 +231,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         self.tcx.check_stability(pick.item.def_id, Some(call_expr.hir_id), span, None);
 
-        let result = match trait_def_id {
-            None => self.confirm_method(span, self_expr, call_expr, self_ty, pick.clone(), segment),
-            Some(_) => self.confirm_method_x2(
+        let result = self.confirm_method(
                 span,
                 self_expr,
                 other_expr,
@@ -242,8 +240,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 other_ty,
                 pick.clone(),
                 segment,
-            ),
-        };
+            );
 
         if let Some(span) = result.illegal_sized_bound {
             let mut needs_mut = false;

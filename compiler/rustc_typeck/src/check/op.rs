@@ -503,7 +503,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 self.tcx.ty_error()
             }
         };
-        debug!("returning_x2 {:?}", return_ty);
 
         (lhs_ty, rhs_ty, return_ty)
     }

@@ -259,23 +259,29 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
 
             // We probe again, taking all traits into account (not only those in scope).
-            let candidates =
-                match self.lookup_probe(span, segment.ident, self_ty, call_expr, scope, other_ty) {
-                    // If we find a different result the caller probably forgot to import a trait.
-                    Ok(ref new_pick) if *new_pick != pick => vec![new_pick.item.container.id()],
-                    Err(Ambiguity(ref sources)) => sources
-                        .iter()
-                        .filter_map(|source| {
-                            match *source {
-                                // Note: this cannot come from an inherent impl,
-                                // because the first probing succeeded.
-                                ImplSource(def) => self.tcx.trait_id_of_impl(def),
-                                TraitSource(_) => None,
-                            }
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                };
+            let candidates = match self.lookup_probe(
+                span,
+                segment.ident,
+                self_ty,
+                call_expr,
+                ProbeScope::AllTraits,
+                other_ty,
+            ) {
+                // If we find a different result the caller probably forgot to import a trait.
+                Ok(ref new_pick) if *new_pick != pick => vec![new_pick.item.container.id()],
+                Err(Ambiguity(ref sources)) => sources
+                    .iter()
+                    .filter_map(|source| {
+                        match *source {
+                            // Note: this cannot come from an inherent impl,
+                            // because the first probing succeeded.
+                            ImplSource(def) => self.tcx.trait_id_of_impl(def),
+                            TraitSource(_) => None,
+                        }
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
 
             return Err(IllegalSizedBound(candidates, needs_mut, span));
         }
@@ -366,7 +372,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             self.lookup_method_in_trait(span, m_name, trait_def_id, self_ty, Some(opt_input_types));
         // Late resolve of rhs for binops (see NB in check_overloaded_binop)
         // But used as early resolve for generic lookup below
-        if resolve_other_ty {
+        // the old behaviour was to do it in the caller
+        if resolve_other_ty && self.tcx.features().operator_autoref {
             assert!(other_expr.is_some());
             assert!(opt_input_type.is_some());
             let rhs_ty = self.check_expr_coercable_to_type(

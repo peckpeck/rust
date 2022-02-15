@@ -12,5 +12,5 @@ impl std::ops::Add<&X> for &X {
 fn main() {
     let a = X { };
     let b = X { };
-    println!("x: {:?}", a+b);
+    println!("x: {:?}", a+b); //~ ERROR cannot add `X` to `X`
 }

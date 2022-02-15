@@ -203,7 +203,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         let mut opt_ty = Some(rhs_ty_var);
 
-        // rhs_ty is resolved during the lookup process
         let result = self.lookup_op_method(
             lhs_ty,
             &mut opt_ty,
@@ -214,8 +213,18 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             true,
         );
 
-        assert!(opt_ty.is_some());
-        let rhs_ty = opt_ty.unwrap();
+        // rhs_ty is resolved during the lookup process if we have operator_autoref feature
+        // otherwise keep the old behaviour and do it here.
+        // This is because the new behaviour change error messages
+        // (mismatched types becomes an operator specific error for example)
+        let rhs_ty = if self.tcx.features().operator_autoref {
+            assert!(opt_ty.is_some());
+            opt_ty.unwrap()
+        } else {
+            // see `NB` above
+            let rhs_ty = self.check_expr_coercable_to_type(rhs_expr, rhs_ty_var, Some(lhs_expr));
+            self.resolve_vars_with_obligations(rhs_ty)
+        };
 
         let return_ty = match result {
             Ok(method) => {

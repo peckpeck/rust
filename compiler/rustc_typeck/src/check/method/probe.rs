@@ -193,11 +193,9 @@ impl AutorefOrPtrAdjustment {
         }
     }
 }
-/*
+
 #[derive(Debug, PartialEq, Copy, Clone)]
 enum AdjustKind {
-    None,
-
     /// For each type `T` in the step list, this attempts to find a method where
     /// the (transformed) self type is exactly `T`. We do however do one
     /// transformation on the adjustment: if we are passing a region pointer in,
@@ -214,7 +212,7 @@ enum AdjustKind {
     /// autorefs would require dereferencing the pointer, which is not safe.
     ByConstPtr,
 }
-*/
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct AdjustArg<'tcx> {
     pub ty: Ty<'tcx>,
@@ -228,11 +226,10 @@ pub struct AdjustArg<'tcx> {
     /// `*mut T`, convert it to `*const T`.
     pub autoref_or_ptr_adjustment: Option<AutorefOrPtrAdjustment>,
 }
-/*
+
 impl<'tcx> AdjustArg<'tcx> {
     fn adjust(&mut self, kind: AdjustKind, step: &CandidateStep<'tcx>) {
         match kind {
-            AdjustKind::None => {}
             AdjustKind::ByValue => {
                 self.autoderefs = step.autoderefs;
 
@@ -256,7 +253,7 @@ impl<'tcx> AdjustArg<'tcx> {
             }
         }
     }
-}*/
+}
 #[derive(Debug, PartialEq, Clone)]
 pub struct Pick<'tcx> {
     pub item: ty::AssocItem,
@@ -1342,202 +1339,106 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     .unwrap_or_else(|_| {
                         span_bug!(self.span, "{:?} was applicable but now isn't?", step.self_ty)
                     });
-                self.pick_by_value_method(
-                    step,
-                    self_ty,
-                    opt_step,
-                    opt_ty,
-                    unstable_candidates.as_deref_mut(),
-                )
-                    .or_else(|| {
-                        self.pick_autorefd_method(
+                // FIXME BPE This is too broad
+                let adjust_tries = [
+                    AdjustKind::ByValue,
+                    AdjustKind::ByRefd(hir::Mutability::Not),
+                    AdjustKind::ByRefd(hir::Mutability::Mut),
+                    AdjustKind::ByConstPtr,
+                ];
+                let opt_adjust_tries: &[AdjustKind] = match opt_step {
+                    None => &[AdjustKind::ByValue],
+                    Some(_) => &[
+                        AdjustKind::ByValue,
+                        AdjustKind::ByRefd(hir::Mutability::Not),
+                        AdjustKind::ByRefd(hir::Mutability::Mut),
+                        AdjustKind::ByConstPtr,
+                    ],
+                };
+                for adjust in adjust_tries {
+                    for opt_adjust in opt_adjust_tries {
+                        let pick = self.pick_one_method_with_opt(
                             step,
                             self_ty,
+                            adjust,
                             opt_step,
                             opt_ty,
+                            *opt_adjust,
                             unstable_candidates.as_deref_mut(),
-                        )
-                            .or_else(|| {
-                                self.pick_const_ptr_method(
-                                    step,
-                                    self_ty,
-                                    opt_step,
-                                    opt_ty,
-                                    unstable_candidates.as_deref_mut(),
-                                )
-                            })
-                    })
+                        );
+                        if pick.is_some() {
+                            return pick;
+                        }
+                    }
+                }
+                None
             })
             .next()
     }
 
-    /// For each type `T` in the step list, this attempts to find a method where
-    /// the (transformed) self type is exactly `T`. We do however do one
-    /// transformation on the adjustment: if we are passing a region pointer in,
-    /// we will potentially *reborrow* it to a shorter lifetime. This allows us
-    /// to transparently pass `&mut` pointers, in particular, without consuming
-    /// them for their entire lifetime.
-    fn pick_by_value_method(
-        &mut self,
+    fn pick_ty(
+        &self,
+        kind: AdjustKind,
+        ty: Ty<'tcx>,
         step: &CandidateStep<'tcx>,
-        self_ty: Ty<'tcx>,
-        opt_step: Option<&CandidateStep<'tcx>>,
-        opt_ty: Option<Ty<'tcx>>,
-        unstable_candidates: Option<&mut Vec<(Candidate<'tcx>, Symbol)>>,
-    ) -> Option<PickResult<'tcx>> {
-        if step.unsize {
-            return None;
-        }
-        if let Some(step) = opt_step {
-            if step.unsize {
-                return None;
+    ) -> Option<Ty<'tcx>> {
+        match kind {
+            AdjustKind::ByValue => {
+                if step.unsize {
+                    None
+                } else {
+                    Some(ty)
+                }
+            }
+            AdjustKind::ByRefd(mutbl) => {
+                // In general, during probing we erase regions.
+                let region = self.tcx.lifetimes.re_erased;
+                Some(self.tcx.mk_ref(region, ty::TypeAndMut { ty, mutbl }))
+            }
+            AdjustKind::ByConstPtr => {
+                if step.unsize {
+                    None
+                } else {
+                    let ty = match ty.kind() {
+                        ty::RawPtr(ty::TypeAndMut { ty, mutbl: hir::Mutability::Mut }) => ty,
+                        _ => return None,
+                    };
+                    let const_ty = ty::TypeAndMut { ty, mutbl: hir::Mutability::Not };
+                    Some(self.tcx.mk_ptr(const_ty))
+                }
             }
         }
-
-        self.pick_method(self_ty, opt_ty, unstable_candidates).map(|r| {
-            r.map(|mut pick| {
-                pick.self_arg.autoderefs = step.autoderefs;
-                /*pick.opt_arg.map(|mut x| if let Some(step) = opt_step {
-                    x.autoderefs = step.autoderefs
-                });*/
-
-                // Insert a `&*` or `&mut *` if this is a reference type:
-                if let ty::Ref(_, _, mutbl) = *step.self_ty.value.value.kind() {
-                    pick.self_arg.autoderefs += 1;
-                    pick.self_arg.autoref_or_ptr_adjustment = Some(AutorefOrPtrAdjustment::Autoref {
-                        mutbl,
-                        unsize: pick.self_arg.autoref_or_ptr_adjustment.map_or(false, |a| a.get_unsize()),
-                    })
-                }/*
-                // Insert a `&*` or `&mut *` if this is a reference type:
-                if let Some(opt_step) = opt_step {
-                    if let ty::Ref(_, _, mutbl) = *opt_step.self_ty.value.value.kind() {
-                        pick.other_autoderefs.as_mut().map(|x| *x += 1);
-                        pick.other_autoref_or_ptr_adjustment =
-                            Some(AutorefOrPtrAdjustment::Autoref {
-                                mutbl,
-                                unsize: pick
-                                    .other_autoref_or_ptr_adjustment
-                                    .map_or(false, |a| a.get_unsize()),
-                            })
-                    }
-                }*/
-
-                pick
-            })
-        })
     }
 
-    fn pick_autorefd_method(
+    fn pick_one_method_with_opt(
         &mut self,
         step: &CandidateStep<'tcx>,
         self_ty: Ty<'tcx>,
+        self_adjust: AdjustKind,
         opt_step: Option<&CandidateStep<'tcx>>,
         opt_ty: Option<Ty<'tcx>>,
-        mut unstable_candidates: Option<&mut Vec<(Candidate<'tcx>, Symbol)>>,
-    ) -> Option<PickResult<'tcx>> {
-
-        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, true, false, false, false, unstable_candidates.as_deref_mut()).or_else(||
-        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, false, false, true, false, unstable_candidates.as_deref_mut()).or_else(||
-        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, true, false, true, false, unstable_candidates.as_deref_mut()).or_else(||
-
-        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, true, true, false, false, unstable_candidates.as_deref_mut()).or_else(||
-        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, false, false, true, true, unstable_candidates.as_deref_mut()).or_else(||
-
-        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, true, true, true, false, unstable_candidates.as_deref_mut()).or_else(||
-        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, true, false, true, true, unstable_candidates.as_deref_mut()).or_else(||
-
-        self.pick_autorefd_method_substep(step, self_ty, opt_step, opt_ty, true, true, true, true, unstable_candidates.as_deref_mut())
-        )))))))
-    }
-
-    fn pick_autorefd_method_substep(
-        &mut self,
-        step: &CandidateStep<'tcx>,
-        self_ty: Ty<'tcx>,
-        _opt_step: Option<&CandidateStep<'tcx>>,
-        opt_ty: Option<Ty<'tcx>>,
-        self_ref: bool,
-        self_mut: bool,
-        opt_ref: bool,
-        opt_mut: bool,
+        opt_adjust: AdjustKind,
         unstable_candidates: Option<&mut Vec<(Candidate<'tcx>, Symbol)>>,
     ) -> Option<PickResult<'tcx>> {
-        let mutbl = if self_mut {
-            hir::Mutability::Mut
-        } else {
-            hir::Mutability::Not
+        let adjusted_self_ty = match self.pick_ty(self_adjust, self_ty, step) {
+            Some(ty) => ty,
+            None => return None,
         };
-        let opt_mutbl = if opt_mut {
-            hir::Mutability::Mut
-        } else {
-            hir::Mutability::Not
-        }
-            ;
-        let tcx = self.tcx;
-
-        // In general, during probing we erase regions.
-        let region = tcx.lifetimes.re_erased;
-
-        let autoref_ty = if self_ref{
-            tcx.mk_ref(region, ty::TypeAndMut { ty: self_ty, mutbl })
-        } else {
-            self_ty
-        };
-        let autoref_opt_ty = if opt_ref {
-            opt_ty.map(|ty| tcx.mk_ref(region, ty::TypeAndMut { ty, mutbl: opt_mutbl }))
-        } else {
-            opt_ty
+        let adjusted_opt_ty = match opt_ty {
+            None => None,
+            Some(ty) => {
+                assert!(opt_step.is_some());
+                Some(self.pick_ty(opt_adjust, ty, opt_step.unwrap())?)
+            }
         };
 
-        self.pick_method(autoref_ty, autoref_opt_ty, unstable_candidates).map(|r| {
+        self.pick_method(adjusted_self_ty, adjusted_opt_ty, unstable_candidates).map(|r| {
             r.map(|mut pick| {
-                pick.self_arg.autoderefs = step.autoderefs;
-                /*pick.opt_arg.map(|mut x| if let Some(step) = opt_step {
-                    x.autoderefs = step.autoderefs
-                });*/
-                if self_ref {
-                    pick.self_arg.autoref_or_ptr_adjustment =
-                        Some(AutorefOrPtrAdjustment::Autoref { mutbl, unsize: step.unsize });
-                }/*
-                if opt_ref {
-                    pick.other_autoref_or_ptr_adjustment = opt_step.map(|opt_step| {
-                        AutorefOrPtrAdjustment::Autoref { mutbl: opt_mutbl, unsize: opt_step.unsize }
-                    });
-                }*/
-                pick
-            })
-        })
-    }
-
-    /// If `self_ty` is `*mut T` then this picks `*const T` methods. The reason why we have a
-    /// special case for this is because going from `*mut T` to `*const T` with autoderefs and
-    /// autorefs would require dereferencing the pointer, which is not safe.
-    fn pick_const_ptr_method(
-        &mut self,
-        step: &CandidateStep<'tcx>,
-        self_ty: Ty<'tcx>,
-        _opt_step: Option<&CandidateStep<'tcx>>,
-        opt_ty: Option<Ty<'tcx>>,
-        unstable_candidates: Option<&mut Vec<(Candidate<'tcx>, Symbol)>>,
-    ) -> Option<PickResult<'tcx>> {
-        // Don't convert an unsized reference to ptr
-        if step.unsize {
-            return None;
-        }
-        //FIXME BPE to do
-
-        let ty = match self_ty.kind() {
-            ty::RawPtr(ty::TypeAndMut { ty, mutbl: hir::Mutability::Mut }) => ty,
-            _ => return None,
-        };
-
-        let const_self_ty = ty::TypeAndMut { ty, mutbl: hir::Mutability::Not };
-        let const_ptr_ty = self.tcx.mk_ptr(const_self_ty);
-        self.pick_method(const_ptr_ty, opt_ty, unstable_candidates).map(|r| {
-            r.map(|mut pick| {
-                pick.self_arg.autoderefs = step.autoderefs;
-                pick.self_arg.autoref_or_ptr_adjustment = Some(AutorefOrPtrAdjustment::ToConstPtr);
+                pick.self_arg.adjust(self_adjust, step);
+                pick.opt_arg.as_mut().map(|arg| {
+                    assert!(opt_step.is_some());
+                    arg.adjust(opt_adjust, opt_step.unwrap())
+                });
                 pick
             })
         })

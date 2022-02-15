@@ -550,7 +550,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     expr,
                     lhs_expr,
                     None,
-                    false
+                    false,
                 )
                 .is_ok()
             {
@@ -670,7 +670,15 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         lhs_expr: &'tcx hir::Expr<'tcx>,
     ) -> Ty<'tcx> {
         assert!(op.is_by_value());
-        match self.lookup_op_method(operand_ty, &mut None, Op::Unary(op, ex.span), ex, lhs_expr, None, false) {
+        match self.lookup_op_method(
+            operand_ty,
+            &mut None,
+            Op::Unary(op, ex.span),
+            ex,
+            lhs_expr,
+            None,
+            false,
+        ) {
             Ok(method) => {
                 self.write_method_call(ex.hir_id, method);
                 method.sig.output()

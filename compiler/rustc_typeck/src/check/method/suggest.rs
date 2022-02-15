@@ -1479,7 +1479,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     // `suggest_valid_traits`.
                     let did = Some(pick.item.container.id());
                     let skip = skippable.contains(&did);
-                    if pick.autoderefs == 0 && !skip {
+                    if pick.self_arg.autoderefs == 0 && !skip {
                         err.span_label(
                             pick.item.ident(self.tcx).span,
                             &format!("the method is available for `{}` here", rcvr_ty),
@@ -1514,7 +1514,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             // Make sure the method is defined for the *actual* receiver: we don't
                             // want to treat `Box<Self>` as a receiver if it only works because of
                             // an autoderef to `&self`
-                            if pick.autoderefs == 0 && !skip {
+                            if pick.self_arg.autoderefs == 0 && !skip {
                                 err.span_label(
                                     pick.item.ident(self.tcx).span,
                                     &format!("the method is available for `{}` here", new_rcvr_t),

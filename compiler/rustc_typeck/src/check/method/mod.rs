@@ -232,15 +232,15 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         self.tcx.check_stability(pick.item.def_id, Some(call_expr.hir_id), span, None);
 
         let result = self.confirm_method(
-                span,
-                self_expr,
-                other_expr,
-                call_expr,
-                self_ty,
-                other_ty,
-                pick.clone(),
-                segment,
-            );
+            span,
+            self_expr,
+            other_expr,
+            call_expr,
+            self_ty,
+            other_ty,
+            pick.clone(),
+            segment,
+        );
 
         if let Some(span) = result.illegal_sized_bound {
             let mut needs_mut = false;
@@ -362,13 +362,18 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // Keep original behaviour as a shortcut as it's way faster
         let opt_input_types =
             opt_input_type.as_ref().map(core::slice::from_ref).unwrap_or_default();
-        let result = self.lookup_method_in_trait(span, m_name, trait_def_id, self_ty, Some(opt_input_types));
+        let result =
+            self.lookup_method_in_trait(span, m_name, trait_def_id, self_ty, Some(opt_input_types));
         // Late resolve of rhs for binops (see NB in check_overloaded_binop)
         // But used as early resolve for generic lookup below
         if resolve_other_ty {
             assert!(other_expr.is_some());
             assert!(opt_input_type.is_some());
-            let rhs_ty = self.check_expr_coercable_to_type(other_expr.unwrap(), opt_input_type.unwrap(), Some(self_expr));
+            let rhs_ty = self.check_expr_coercable_to_type(
+                other_expr.unwrap(),
+                opt_input_type.unwrap(),
+                Some(self_expr),
+            );
             *opt_input_type = Some(self.resolve_vars_with_obligations(rhs_ty));
         }
         if result.is_some() {
@@ -377,18 +382,19 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         // New operator_autoref behaviour: full trait lookup
         if self.tcx.features().operator_autoref {
-            let result = self.lookup_method(
-                self_ty,
-                *opt_input_type,
-                &hir::PathSegment::from_ident(m_name),
-                span,
-                call_expr,
-                self_expr,
-                other_expr,
-                None,
-                Some(trait_def_id),
-            )
-            .ok()?;
+            let result = self
+                .lookup_method(
+                    self_ty,
+                    *opt_input_type,
+                    &hir::PathSegment::from_ident(m_name),
+                    span,
+                    call_expr,
+                    self_expr,
+                    other_expr,
+                    None,
+                    Some(trait_def_id),
+                )
+                .ok()?;
 
             // Obligations are already checked with confirm method from lookup method
             Some(InferOk { obligations: vec![], value: result })

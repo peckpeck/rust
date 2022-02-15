@@ -193,12 +193,31 @@ impl AutorefOrPtrAdjustment {
         }
     }
 }
+/*
+#[derive(Debug, PartialEq, Copy, Clone)]
+enum AdjustKind {
+    None,
 
+    /// For each type `T` in the step list, this attempts to find a method where
+    /// the (transformed) self type is exactly `T`. We do however do one
+    /// transformation on the adjustment: if we are passing a region pointer in,
+    /// we will potentially *reborrow* it to a shorter lifetime. This allows us
+    /// to transparently pass `&mut` pointers, in particular, without consuming
+    /// them for their entire lifetime.
+    ByValue,
+
+    /// Autoref can be done mutably or not
+    ByRefd(hir::Mutability),
+
+    /// If `self_ty` is `*mut T` then this picks `*const T` methods. The reason why we have a
+    /// special case for this is because going from `*mut T` to `*const T` with autoderefs and
+    /// autorefs would require dereferencing the pointer, which is not safe.
+    ByConstPtr,
+}
+*/
 #[derive(Debug, PartialEq, Clone)]
-pub struct Pick<'tcx> {
-    pub item: ty::AssocItem,
-    pub kind: PickKind<'tcx>,
-    pub import_ids: SmallVec<[LocalDefId; 1]>,
+pub struct AdjustArg<'tcx> {
+    pub ty: Ty<'tcx>,
 
     /// Indicates that the source expression should be autoderef'd N times
     ///
@@ -208,17 +227,46 @@ pub struct Pick<'tcx> {
     /// Indicates that we want to add an autoref (and maybe also unsize it), or if the receiver is
     /// `*mut T`, convert it to `*const T`.
     pub autoref_or_ptr_adjustment: Option<AutorefOrPtrAdjustment>,
-    pub self_ty: Ty<'tcx>,
+}
+/*
+impl<'tcx> AdjustArg<'tcx> {
+    fn adjust(&mut self, kind: AdjustKind, step: &CandidateStep<'tcx>) {
+        match kind {
+            AdjustKind::None => {}
+            AdjustKind::ByValue => {
+                self.autoderefs = step.autoderefs;
 
-    /// Indicates that the first argument expression should be autoderef'd N times
-    ///
-    ///     A = expr | *expr | **expr | ...
-    pub other_autoderefs: Option<usize>,
+                // Insert a `&*` or `&mut *` if this is a reference type:
+                if let ty::Ref(_, _, mutbl) = *step.self_ty.value.value.kind() {
+                    self.autoderefs += 1;
+                    self.autoref_or_ptr_adjustment = Some(AutorefOrPtrAdjustment::Autoref {
+                        mutbl,
+                        unsize: self.autoref_or_ptr_adjustment.map_or(false, |a| a.get_unsize()),
+                    })
+                }
+            }
+            AdjustKind::ByRefd(mutbl) => {
+                self.autoderefs = step.autoderefs;
+                self.autoref_or_ptr_adjustment =
+                    Some(AutorefOrPtrAdjustment::Autoref { mutbl, unsize: step.unsize });
+            }
+            AdjustKind::ByConstPtr => {
+                self.autoderefs = step.autoderefs;
+                self.autoref_or_ptr_adjustment = Some(AutorefOrPtrAdjustment::ToConstPtr);
+            }
+        }
+    }
+}*/
+#[derive(Debug, PartialEq, Clone)]
+pub struct Pick<'tcx> {
+    pub item: ty::AssocItem,
+    pub kind: PickKind<'tcx>,
+    pub import_ids: SmallVec<[LocalDefId; 1]>,
 
-    /// Indicates that we want to add an autoref (and maybe also unsize it), or if the first argument is
-    /// `*mut T`, convert it to `*const T`.
-    pub other_autoref_or_ptr_adjustment: Option<AutorefOrPtrAdjustment>,
-    pub other_ty: Option<Ty<'tcx>>,
+    // self argment
+    pub self_arg: AdjustArg<'tcx>,
+    // optional first argument
+    pub opt_arg: Option<AdjustArg<'tcx>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -360,6 +408,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     where
         OP: FnOnce(ProbeContext<'a, 'tcx>) -> Result<R, MethodError<'tcx>>,
     {
+        // FIXME BPE review the path flow of "an op trait with parameter" and "a parameter was passed"
         let mut orig_values = OriginalQueryValues::default();
         let steps =
             self.create_steps(span, mode, is_suggestion, self_ty, scope_expr_id, &mut orig_values)?;
@@ -407,13 +456,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     probe_cx.assemble_inherent_candidates();
                     probe_cx.assemble_extension_candidates_for_all_traits()
                 }
-                ProbeScope::GivenTrait(trait_def_id) => {
-                    probe_cx.assemble_extension_candidates_for_trait(
-                        &smallvec![],
-                        trait_def_id,
-                        true,
-                    )
-                }
+                ProbeScope::GivenTrait(trait_def_id) => probe_cx
+                    .assemble_extension_candidates_for_trait(&smallvec![], trait_def_id, true),
             };
             op(probe_cx)
         })
@@ -1160,6 +1204,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         if let Some(r) = self.pick_core() {
             return r;
         }
+        // FIXME BPE suggestions in case of op trait are useless
 
         debug!("pick: actual search failed, assemble diagnostics");
 
@@ -1262,7 +1307,11 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     .unwrap_or_else(|_| {
                         span_bug!(self.span, "{:?} was applicable but now isn't?", opt_step.self_ty)
                     });
-                self.pick_all_method_with_opt(unstable_candidates.as_deref_mut(), Some(opt_step), Some(opt_ty))
+                self.pick_all_method_with_opt(
+                    unstable_candidates.as_deref_mut(),
+                    Some(opt_step),
+                    Some(opt_ty),
+                )
             })
             .next()
     }
@@ -1347,17 +1396,19 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
 
         self.pick_method(self_ty, opt_ty, unstable_candidates).map(|r| {
             r.map(|mut pick| {
-                pick.autoderefs = step.autoderefs;
-                pick.other_autoderefs = opt_step.map(|x| x.autoderefs);
+                pick.self_arg.autoderefs = step.autoderefs;
+                /*pick.opt_arg.map(|mut x| if let Some(step) = opt_step {
+                    x.autoderefs = step.autoderefs
+                });*/
 
                 // Insert a `&*` or `&mut *` if this is a reference type:
                 if let ty::Ref(_, _, mutbl) = *step.self_ty.value.value.kind() {
-                    pick.autoderefs += 1;
-                    pick.autoref_or_ptr_adjustment = Some(AutorefOrPtrAdjustment::Autoref {
+                    pick.self_arg.autoderefs += 1;
+                    pick.self_arg.autoref_or_ptr_adjustment = Some(AutorefOrPtrAdjustment::Autoref {
                         mutbl,
-                        unsize: pick.autoref_or_ptr_adjustment.map_or(false, |a| a.get_unsize()),
+                        unsize: pick.self_arg.autoref_or_ptr_adjustment.map_or(false, |a| a.get_unsize()),
                     })
-                }
+                }/*
                 // Insert a `&*` or `&mut *` if this is a reference type:
                 if let Some(opt_step) = opt_step {
                     if let ty::Ref(_, _, mutbl) = *opt_step.self_ty.value.value.kind() {
@@ -1370,7 +1421,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                                     .map_or(false, |a| a.get_unsize()),
                             })
                     }
-                }
+                }*/
 
                 pick
             })
@@ -1404,7 +1455,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         &mut self,
         step: &CandidateStep<'tcx>,
         self_ty: Ty<'tcx>,
-        opt_step: Option<&CandidateStep<'tcx>>,
+        _opt_step: Option<&CandidateStep<'tcx>>,
         opt_ty: Option<Ty<'tcx>>,
         self_ref: bool,
         self_mut: bool,
@@ -1441,17 +1492,19 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
 
         self.pick_method(autoref_ty, autoref_opt_ty, unstable_candidates).map(|r| {
             r.map(|mut pick| {
-                pick.autoderefs = step.autoderefs;
-                pick.other_autoderefs = opt_step.map(|x| x.autoderefs);
+                pick.self_arg.autoderefs = step.autoderefs;
+                /*pick.opt_arg.map(|mut x| if let Some(step) = opt_step {
+                    x.autoderefs = step.autoderefs
+                });*/
                 if self_ref {
-                    pick.autoref_or_ptr_adjustment =
+                    pick.self_arg.autoref_or_ptr_adjustment =
                         Some(AutorefOrPtrAdjustment::Autoref { mutbl, unsize: step.unsize });
-                }
+                }/*
                 if opt_ref {
                     pick.other_autoref_or_ptr_adjustment = opt_step.map(|opt_step| {
                         AutorefOrPtrAdjustment::Autoref { mutbl: opt_mutbl, unsize: opt_step.unsize }
                     });
-                }
+                }*/
                 pick
             })
         })
@@ -1483,8 +1536,8 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         let const_ptr_ty = self.tcx.mk_ptr(const_self_ty);
         self.pick_method(const_ptr_ty, opt_ty, unstable_candidates).map(|r| {
             r.map(|mut pick| {
-                pick.autoderefs = step.autoderefs;
-                pick.autoref_or_ptr_adjustment = Some(AutorefOrPtrAdjustment::ToConstPtr);
+                pick.self_arg.autoderefs = step.autoderefs;
+                pick.self_arg.autoref_or_ptr_adjustment = Some(AutorefOrPtrAdjustment::ToConstPtr);
                 pick
             })
         })
@@ -1679,7 +1732,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                             "use the fully qualified path to the associated const",
                             format!(
                                 "<{} as {}>::{}",
-                                stable_pick.self_ty,
+                                stable_pick.self_arg.ty,
                                 self.tcx.def_path_str(def_id),
                                 stable_pick.item.name
                             ),
@@ -1969,18 +2022,18 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             return None;
         }
 
+        let self_arg = AdjustArg { autoderefs: 0, autoref_or_ptr_adjustment: None, ty: self_ty };
+        let opt_arg =
+            opt_ty.map(|ty| AdjustArg { autoderefs: 0, autoref_or_ptr_adjustment: None, ty });
+
         // FIXME: check the return type here somehow.
         // If so, just use this trait and call it a day.
         Some(Pick {
             item: probes[0].0.item,
             kind: TraitPick,
             import_ids: probes[0].0.import_ids.clone(),
-            autoderefs: 0,
-            autoref_or_ptr_adjustment: None,
-            self_ty,
-            other_autoderefs: None,
-            other_autoref_or_ptr_adjustment: None,
-            other_ty: opt_ty,
+            self_arg,
+            opt_arg,
         })
     }
 
@@ -2217,6 +2270,9 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
 
 impl<'tcx> Candidate<'tcx> {
     fn to_unadjusted_pick(&self, self_ty: Ty<'tcx>, opt_ty: Option<Ty<'tcx>>) -> Pick<'tcx> {
+        let self_arg = AdjustArg { autoderefs: 0, autoref_or_ptr_adjustment: None, ty: self_ty };
+        let opt_arg =
+            opt_ty.map(|ty| AdjustArg { autoderefs: 0, autoref_or_ptr_adjustment: None, ty });
         Pick {
             item: self.item,
             kind: match self.kind {
@@ -2238,12 +2294,8 @@ impl<'tcx> Candidate<'tcx> {
                 }
             },
             import_ids: self.import_ids.clone(),
-            autoderefs: 0,
-            autoref_or_ptr_adjustment: None,
-            self_ty,
-            other_autoderefs: None,
-            other_autoref_or_ptr_adjustment: None,
-            other_ty: opt_ty,
+            self_arg,
+            opt_arg,
         }
     }
 }

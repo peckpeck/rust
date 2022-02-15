@@ -60,9 +60,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         if matches!(pick.kind, probe::PickKind::InherentImplPick | probe::PickKind::ObjectPick) {
             // avoid repeatedly adding unneeded `&*`s
-            if pick.autoderefs == 1
+            if pick.self_arg.autoderefs == 1
                 && matches!(
-                    pick.autoref_or_ptr_adjustment,
+                    pick.self_arg.autoref_or_ptr_adjustment,
                     Some(probe::AutorefOrPtrAdjustment::Autoref { .. })
                 )
                 && matches!(self_ty.kind(), Ref(..))
@@ -72,7 +72,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
             // if it's an inherent `self` method (not `&self` or `&mut self`), it will take
             // precedence over the `TryInto` impl, and thus won't break in 2021 edition
-            if pick.autoderefs == 0 && pick.autoref_or_ptr_adjustment.is_none() {
+            if pick.self_arg.autoderefs == 0 && pick.self_arg.autoref_or_ptr_adjustment.is_none() {
                 return;
             }
 
@@ -90,9 +90,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         segment.ident.name
                     ));
 
-                    let derefs = "*".repeat(pick.autoderefs);
+                    let derefs = "*".repeat(pick.self_arg.autoderefs);
 
-                    let autoref = match pick.autoref_or_ptr_adjustment {
+                    let autoref = match pick.self_arg.autoref_or_ptr_adjustment {
                         Some(probe::AutorefOrPtrAdjustment::Autoref {
                             mutbl: Mutability::Mut,
                             ..
@@ -106,7 +106,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     if let Ok(self_expr) = self.sess().source_map().span_to_snippet(self_expr.span)
                     {
                         let self_adjusted = if let Some(probe::AutorefOrPtrAdjustment::ToConstPtr) =
-                            pick.autoref_or_ptr_adjustment
+                            pick.self_arg.autoref_or_ptr_adjustment
                         {
                             format!("{}{} as *const _", derefs, self_expr)
                         } else {
@@ -121,7 +121,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         );
                     } else {
                         let self_adjusted = if let Some(probe::AutorefOrPtrAdjustment::ToConstPtr) =
-                            pick.autoref_or_ptr_adjustment
+                            pick.self_arg.autoref_or_ptr_adjustment
                         {
                             format!("{}(...) as *const _", derefs)
                         } else {
@@ -387,9 +387,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         expr: &hir::Expr<'tcx>,
         outer: Span,
     ) -> (String, bool) {
-        let derefs = "*".repeat(pick.autoderefs);
+        let derefs = "*".repeat(pick.self_arg.autoderefs);
 
-        let autoref = match pick.autoref_or_ptr_adjustment {
+        let autoref = match pick.self_arg.autoref_or_ptr_adjustment {
             Some(probe::AutorefOrPtrAdjustment::Autoref { mutbl: Mutability::Mut, .. }) => "&mut ",
             Some(probe::AutorefOrPtrAdjustment::Autoref { mutbl: Mutability::Not, .. }) => "&",
             Some(probe::AutorefOrPtrAdjustment::ToConstPtr) | None => "",
@@ -406,7 +406,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         };
 
         let adjusted_text = if let Some(probe::AutorefOrPtrAdjustment::ToConstPtr) =
-            pick.autoref_or_ptr_adjustment
+            pick.self_arg.autoref_or_ptr_adjustment
         {
             format!("{}{} as *const _", derefs, expr_text)
         } else {

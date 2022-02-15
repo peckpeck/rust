@@ -80,7 +80,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         segment: &hir::PathSegment<'_>,
     ) -> ConfirmResult<'tcx> {
         // Adjust the self expression the user provided and obtain the adjusted type.
-        let self_ty = self.adjust_ty(unadjusted_self_ty, pick.autoderefs, &pick.autoref_or_ptr_adjustment, self.self_expr);
+        let self_ty = self.adjust_ty(unadjusted_self_ty, &pick.self_arg, self.self_expr);
 
         // Create substitutions for the method's type parameters.
         // type is only used for ObjectPick, so other_type has no place here
@@ -106,10 +106,13 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         self.unify_receivers(self_ty, method_sig_rcvr, &pick, all_substs);
 
         if let Some(unadjusted_other_ty) = unadjusted_other_ty {
-            assert!(pick.other_autoderefs.is_some());
-            assert!(self.other_expr.is_some());
+            assert!(pick.opt_arg.is_some());
             // Same for first argument type if any
-            let other_ty = self.adjust_ty(unadjusted_other_ty, pick.other_autoderefs.unwrap(), &pick.other_autoref_or_ptr_adjustment, self.other_expr.unwrap());
+            let other_ty = self.adjust_ty(
+                unadjusted_other_ty,
+                pick.opt_arg.as_ref().unwrap(),
+                self.other_expr.unwrap(),
+            );
             let method_sig_arg1 =
                 self.normalize_associated_types_in(self.span, method_sig.inputs()[1]);
             debug!(
@@ -163,30 +166,29 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
     fn adjust_ty(
         &mut self,
         unadjusted_ty: Ty<'tcx>,
-        pick_autoderefs: usize,
-        pick_autoref_or_ptr_adjustment: &Option<probe::AutorefOrPtrAdjustment>,
+        adjustment: &probe::AdjustArg<'tcx>,
         expr: &'tcx hir::Expr<'tcx>,
     ) -> Ty<'tcx> {
         // Commit the autoderefs by calling `autoderef` again, but this
         // time writing the results into the various typeck results.
         let mut autoderef =
             self.autoderef_overloaded_span(self.span, unadjusted_ty, self.call_expr.span);
-        let (ty, n) = match autoderef.nth(pick_autoderefs) {
+        let (ty, n) = match autoderef.nth(adjustment.autoderefs) {
             Some(n) => n,
             None => {
                 return self.tcx.ty_error_with_message(
                     rustc_span::DUMMY_SP,
-                    &format!("failed autoderef {}", pick_autoderefs),
+                    &format!("failed autoderef {}", adjustment.autoderefs),
                 );
             }
         };
-        assert_eq!(n, pick_autoderefs);
+        assert_eq!(n, adjustment.autoderefs);
 
         let mut adjustments = self.adjust_steps(&autoderef);
         let mut target = self.structurally_resolved_type(autoderef.span(), ty);
 
-        match pick_autoref_or_ptr_adjustment {
-            &Some(probe::AutorefOrPtrAdjustment::Autoref { mutbl, unsize }) => {
+        match adjustment.autoref_or_ptr_adjustment {
+            Some(probe::AutorefOrPtrAdjustment::Autoref { mutbl, unsize }) => {
                 let region = self.next_region_var(infer::Autoref(self.span));
                 // Type we're wrapping in a reference, used later for unsizing
                 let base_ty = target;
